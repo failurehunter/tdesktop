@@ -56,7 +56,7 @@ jobs:
     env:
       ONLY_CACHE: "false"
       IMAGE_TAG: tdesktop:centos_env
-      GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/tdesktop:centos_env
+      GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/tdesktop:centos_env-${{ hashFiles('Telegram/build/docker/centos_env/**') }}
 
     steps:
       - name: Clone.
@@ -98,23 +98,19 @@ jobs:
           cache-from: type=registry,ref=${{ env.GHCR_IMAGE }}
           cache-to: type=registry,ref=${{ env.GHCR_IMAGE }},mode=max
 
+      - name: Cache build directory.
+        uses: actions/cache@v4
+        with:
+          path: out
+          key: build-${{ runner.os }}-${{ matrix.defines || 'null' }}-${{ hashFiles('**/CMakeLists.txt', '**/CMakeLists.txt.user', '**/*.cmake', '**/cmake/**') }}
+          restore-keys: build-${{ runner.os }}-${{ matrix.defines || 'null' }}-
+
       - name: Cache ccache directory.
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/.tdesktop-cache
           key: ccache-${{ runner.os }}-${{ matrix.defines || 'null' }}-${{ hashFiles('**/CMakeLists.txt') }}
           restore-keys: ccache-${{ runner.os }}-${{ matrix.defines || 'null' }}-
-
-      - name: Determine changed files.
-        id: changed
-        uses: tj-actions/changed-files@v45
-        with:
-          files: |
-            **/*.cpp
-            **/*.h
-            **/*.cmake
-            CMakeLists.txt
-            Telegram/**/*.pro
 
       - name: Telegram Desktop build.
         if: env.ONLY_CACHE == 'false'
@@ -130,37 +126,17 @@ jobs:
 
           mkdir -p ${{ runner.temp }}/.tdesktop-cache
 
-          BUILD_ARGS=(
-            -D CMAKE_CONFIGURATION_TYPES=Release
-            -D TDESKTOP_API_ID=${{ secrets.TDESKTOP_API_ID }}
-            -D TDESKTOP_API_HASH=${{ secrets.TDESKTOP_API_HASH }}
-            -D TDESKTOP_DISABLE_CRASH_REPORTS=ON
-            -D TDESKTOP_DISABLE_AUTOUPDATE=ON
+          docker run --rm \
+            -u $(id -u) \
+            -v $PWD:/usr/src/tdesktop \
+            -v ${{ runner.temp }}/.tdesktop-cache:/var/cache/ccache \
+            -e CONFIG=Release \
+            -e CCACHE_SLOPPINESS=pch_defines,time_macros \
+            $IMAGE_TAG \
+            env -u CCACHE_DISABLE /usr/src/tdesktop/Telegram/build/docker/centos_env/build.sh \
+            -D CMAKE_CONFIGURATION_TYPES=Release \
+            -D TDESKTOP_API_ID=${{ secrets.TDESKTOP_API_ID }} \
+            -D TDESKTOP_API_HASH=${{ secrets.TDESKTOP_API_HASH }} \
+            -D TDESKTOP_DISABLE_CRASH_REPORTS=ON \
+            -D TDESKTOP_DISABLE_AUTOUPDATE=ON \
             $DEFINE
-          )
-
-          if [ "${{ steps.changed.outputs.any_changed }}" == "true" ] && [ -f ../out/CMakeCache.txt ]; then
-            echo "Incremental build: only changed files"
-            TARGETS=$(echo "${{ steps.changed.outputs.all_changed_files }}" | tr ' ' '\n' | sed 's|.*/||; s|\.cpp$||; s|\.h$||' | sort -u | head -20)
-            docker run --rm \
-              -u $(id -u) \
-              -v $PWD:/usr/src/tdesktop \
-              -v ${{ runner.temp }}/.tdesktop-cache:/var/cache/ccache \
-              -e CONFIG=Release \
-              -e CCACHE_SLOPPINESS=pch_defines,time_macros \
-              $IMAGE_TAG \
-              env -u CCACHE_DISABLE /usr/src/tdesktop/Telegram/build/docker/centos_env/build.sh \
-              "${BUILD_ARGS[@]}" \
-              --target $TARGETS
-          else
-            echo "Full build"
-            docker run --rm \
-              -u $(id -u) \
-              -v $PWD:/usr/src/tdesktop \
-              -v ${{ runner.temp }}/.tdesktop-cache:/var/cache/ccache \
-              -e CONFIG=Release \
-              -e CCACHE_SLOPPINESS=pch_defines,time_macros \
-              $IMAGE_TAG \
-              env -u CCACHE_DISABLE /usr/src/tdesktop/Telegram/build/docker/centos_env/build.sh \
-              "${BUILD_ARGS[@]}"
-          fi
