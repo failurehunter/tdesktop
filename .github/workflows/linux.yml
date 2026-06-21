@@ -56,12 +56,24 @@ jobs:
     env:
       ONLY_CACHE: "false"
       IMAGE_TAG: tdesktop:centos_env
+      GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/tdesktop:centos_env
 
     steps:
       - name: Clone.
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Set up Docker Buildx.
+        id: setup-buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry.
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: First set up.
         run: |
@@ -73,32 +85,36 @@ jobs:
           echo "$DOCKERFILE" > Dockerfile
           rm -rf __pycache__
 
-      - name: Set up Docker Buildx.
-        id: setup-buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Pull cached Docker image.
+        run: |
+          docker pull $GHCR_IMAGE || true
 
-      - name: Libraries cache.
-        id: cache-libs
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ runner.temp }}/.buildx-cache
-          key: ${{ runner.OS }}-libs-${{ hashFiles('Telegram/build/docker/centos_env/**') }}
-          restore-keys: ${{ runner.OS }}-libs-
-
-      - name: Libraries.
+      - name: Build Docker image with cache.
         uses: docker/build-push-action@v6
         with:
           context: Telegram/build/docker/centos_env
           load: true
           tags: ${{ env.IMAGE_TAG }}
-          cache-from: type=local,src=${{ runner.temp }}/.buildx-cache
-          cache-to: type=local,dest=${{ runner.temp }}/.buildx-cache-new,mode=max
+          cache-from: type=registry,ref=${{ env.GHCR_IMAGE }}
+          cache-to: type=registry,ref=${{ env.GHCR_IMAGE }},mode=max
 
-      - name: Move cache.
-        run: |
-          rm -rf ${{ runner.temp }}/.buildx-cache
-          mv ${{ runner.temp }}/.buildx-cache{-new,}
+      - name: Cache ccache directory.
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/.tdesktop-cache
+          key: ccache-${{ runner.os }}-${{ matrix.defines || 'null' }}-${{ hashFiles('**/CMakeLists.txt') }}
+          restore-keys: ccache-${{ runner.os }}-${{ matrix.defines || 'null' }}-
+
+      - name: Determine changed files.
+        id: changed
+        uses: tj-actions/changed-files@v45
+        with:
+          files: |
+            **/*.cpp
+            **/*.h
+            **/*.cmake
+            CMakeLists.txt
+            Telegram/**/*.pro
 
       - name: Telegram Desktop build.
         if: env.ONLY_CACHE == 'false'
@@ -114,17 +130,37 @@ jobs:
 
           mkdir -p ${{ runner.temp }}/.tdesktop-cache
 
-          docker run --rm \
-          -u $(id -u) \
-          -v $PWD:/usr/src/tdesktop \
-          -v ${{ runner.temp }}/.tdesktop-cache:/var/cache/ccache \
-          -e CONFIG=Release \
-          -e CCACHE_SLOPPINESS=pch_defines,time_macros \
-          $IMAGE_TAG \
-          env -u CCACHE_DISABLE /usr/src/tdesktop/Telegram/build/docker/centos_env/build.sh \
-          -D CMAKE_CONFIGURATION_TYPES=Release \
-          -D TDESKTOP_API_ID=${{ secrets.TDESKTOP_API_ID }} \
-          -D TDESKTOP_API_HASH=${{ secrets.TDESKTOP_API_HASH }} \
-          -D TDESKTOP_DISABLE_CRASH_REPORTS=ON \
-          -D TDESKTOP_DISABLE_AUTOUPDATE=ON \
-          $DEFINE
+          BUILD_ARGS=(
+            -D CMAKE_CONFIGURATION_TYPES=Release
+            -D TDESKTOP_API_ID=${{ secrets.TDESKTOP_API_ID }}
+            -D TDESKTOP_API_HASH=${{ secrets.TDESKTOP_API_HASH }}
+            -D TDESKTOP_DISABLE_CRASH_REPORTS=ON
+            -D TDESKTOP_DISABLE_AUTOUPDATE=ON
+            $DEFINE
+          )
+
+          if [ "${{ steps.changed.outputs.any_changed }}" == "true" ] && [ -f ../out/CMakeCache.txt ]; then
+            echo "Incremental build: only changed files"
+            TARGETS=$(echo "${{ steps.changed.outputs.all_changed_files }}" | tr ' ' '\n' | sed 's|.*/||; s|\.cpp$||; s|\.h$||' | sort -u | head -20)
+            docker run --rm \
+              -u $(id -u) \
+              -v $PWD:/usr/src/tdesktop \
+              -v ${{ runner.temp }}/.tdesktop-cache:/var/cache/ccache \
+              -e CONFIG=Release \
+              -e CCACHE_SLOPPINESS=pch_defines,time_macros \
+              $IMAGE_TAG \
+              env -u CCACHE_DISABLE /usr/src/tdesktop/Telegram/build/docker/centos_env/build.sh \
+              "${BUILD_ARGS[@]}" \
+              --target $TARGETS
+          else
+            echo "Full build"
+            docker run --rm \
+              -u $(id -u) \
+              -v $PWD:/usr/src/tdesktop \
+              -v ${{ runner.temp }}/.tdesktop-cache:/var/cache/ccache \
+              -e CONFIG=Release \
+              -e CCACHE_SLOPPINESS=pch_defines,time_macros \
+              $IMAGE_TAG \
+              env -u CCACHE_DISABLE /usr/src/tdesktop/Telegram/build/docker/centos_env/build.sh \
+              "${BUILD_ARGS[@]}"
+          fi
