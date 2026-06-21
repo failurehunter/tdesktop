@@ -53,7 +53,9 @@ jobs:
             libsystemd-dev libudev-dev \
             libmount-dev libblkid-dev libfdisk-dev \
             libsmartcols-dev uuid-dev \
-            libgomp1 libgcc-14-dev g++-14
+            libgomp1 libgcc-14-dev g++-14 \
+            lld-22 \
+            lld-22
 
       - name: Configure
         run: |
@@ -68,7 +70,9 @@ jobs:
             -DTDESKTOP_API_HASH=${{ secrets.TDESKTOP_API_HASH }} \
             -DTDESKTOP_DISABLE_CRASH_REPORTS=ON \
             -DTDESKTOP_DISABLE_AUTOUPDATE=ON \
-            -DDESKTOP_APP_USE_PACKAGED=ON
+            -DDESKTOP_APP_USE_PACKAGED=ON \
+            -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld"
 
       - name: Build
         run: |
