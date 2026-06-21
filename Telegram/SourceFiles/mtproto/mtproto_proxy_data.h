@@ -30,10 +30,16 @@ struct ProxyData {
 		Invalid,
 	};
 
+	enum class ClientHello {
+		Default,
+		BoringSSL,
+	};
+
 	Type type = Type::None;
 	QString host;
 	uint32 port = 0;
 	QString user, password;
+	ClientHello clientHello = ClientHello::Default;
 
 	std::vector<QString> resolvedIPs;
 	crl::time resolvedExpireAt = 0;

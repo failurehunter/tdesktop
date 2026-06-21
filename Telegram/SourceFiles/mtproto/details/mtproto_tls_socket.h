@@ -8,16 +8,24 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "mtproto/details/mtproto_abstract_socket.h"
+#include "mtproto/mtproto_proxy_data.h"
 
 namespace MTP::details {
 
 class TlsSocket final : public AbstractSocket {
 public:
+	struct PskData {
+		bytes::vector ticket;
+		uint32 ticketAgeAdd = 0;
+		crl::time timestamp = 0;
+	};
+
 	TlsSocket(
 		not_null<QThread*> thread,
 		const bytes::vector &secret,
 		const QNetworkProxy &proxy,
-		bool protocolForFiles);
+		bool protocolForFiles,
+		MTP::ProxyData::ClientHello clientHello = MTP::ProxyData::ClientHello::Default);
 
 	void connectToHost(const QString &address, int port) override;
 	bool isGoodStartNonce(bytes::const_span nonce) override;
@@ -31,6 +39,9 @@ public:
 	QString debugPostfix() const override;
 
 private:
+
+private:
+
 	enum class State {
 		NotConnected,
 		Connecting,
@@ -54,14 +65,18 @@ private:
 	void readData();
 	[[nodiscard]] bool checkNextPacket();
 	void shiftIncomingBy(int amount);
+	void parseNewSessionTickets();
+	bool parseNewSessionTicketData(bytes::const_span data);
 
 	const bytes::vector _secret;
+	const MTP::ProxyData::ClientHello _clientHello;
 	QTcpSocket _socket;
 	State _state = State::NotConnected;
 	QByteArray _incoming;
 	int _incomingGoodDataOffset = 0;
 	int _incomingGoodDataLimit = 0;
 	int16 _serverHelloLength = 0;
+	std::optional<PskData> _psk;
 
 };
 

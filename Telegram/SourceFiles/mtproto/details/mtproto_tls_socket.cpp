@@ -16,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtCore/QtEndian>
 #include <range/v3/algorithm/reverse.hpp>
+#include <cstring>
 
 namespace MTP::details {
 namespace {
@@ -31,6 +32,115 @@ const auto kServerHeader = qstr("\x17\x03\x03");
 constexpr auto kClientPartSize = 2878;
 const auto kClientPrefix = qstr("\x14\x03\x03\x00\x01\x01");
 const auto kClientHeader = qstr("\x17\x03\x03");
+
+constexpr auto kPskKeyExchangeModePskKe = 0x01;
+constexpr auto kPskExtensionType = 0x0029;
+constexpr auto kPskKeyExchangeModesType = 0x002d;
+constexpr auto kSha256Size = 32;
+
+// Precomputed SHA-256("") for PSK binder computation
+static const bytes::vector kEmptySha256Hash = [] {
+    bytes::vector h(kSha256Size);
+    SHA256(nullptr, 0, reinterpret_cast<uint8_t*>(h.data()));
+    return h;
+}();
+
+// HKDF-Extract(salt, IKM) = HMAC-SHA256(salt, IKM)
+[[nodiscard]] bytes::vector HkdfExtractSha256(
+        bytes::const_span salt,
+        bytes::const_span ikm) {
+    auto result = bytes::vector(kSha256Size);
+    unsigned int len = kSha256Size;
+    HMAC(EVP_sha256(),
+        reinterpret_cast<const unsigned char*>(salt.data()),
+        salt.size(),
+        reinterpret_cast<const unsigned char*>(ikm.data()),
+        ikm.size(),
+        reinterpret_cast<unsigned char*>(result.data()),
+        &len);
+    return result;
+}
+
+// HKDF-Expand(PRK, info, length)
+[[nodiscard]] bytes::vector HkdfExpandSha256(
+        bytes::const_span prk,
+        bytes::const_span info,
+        size_t length) {
+    auto result = bytes::vector(length);
+    unsigned int len = 0;
+    auto t = QByteArray();
+    for (uint8_t i = 1; result.size() > t.size(); ++i) {
+        len = kSha256Size;
+        auto hmacKey = QByteArray(
+            reinterpret_cast<const char*>(prk.data()), prk.size());
+        auto msg = t;
+        msg.append(reinterpret_cast<const char*>(info.data()), info.size());
+        msg.append(static_cast<char>(i));
+        auto block = bytes::vector(kSha256Size);
+        HMAC(EVP_sha256(),
+            reinterpret_cast<const unsigned char*>(hmacKey.data()), hmacKey.size(),
+            reinterpret_cast<const unsigned char*>(msg.data()), msg.size(),
+            reinterpret_cast<unsigned char*>(block.data()),
+            &len);
+        t.append(reinterpret_cast<const char*>(block.data()), kSha256Size);
+    }
+    std::memcpy(result.data(), t.constData(), length);
+    return result;
+}
+
+// HKDF-Expand-Label(Secret, Label, Context, Length)
+[[nodiscard]] bytes::vector HkdfExpandLabel(
+        bytes::const_span secret,
+        const char *label,
+        bytes::const_span context,
+        size_t length) {
+    const QByteArray prefix = "tls13 ";
+    const auto labelLen = strlen(label);
+    const uint8_t labelPrefixLen = prefix.size() + labelLen;
+    const uint8_t contextLen = static_cast<uint8_t>(context.size());
+    QByteArray info;
+    info.append(static_cast<char>((length >> 8) & 0xFF));
+    info.append(static_cast<char>(length & 0xFF));
+    info.append(static_cast<char>(labelPrefixLen));
+    info.append(prefix.constData(), prefix.size());
+    info.append(label, labelLen);
+    info.append(static_cast<char>(contextLen));
+    if (context.size() > 0) {
+        info.append(reinterpret_cast<const char*>(context.data()), context.size());
+    }
+    return HkdfExpandSha256(secret,
+        bytes::make_span(info.data(), info.size()),
+        length);
+}
+
+// Compute PSK binder (RFC 8446 4.2.11.2)
+[[nodiscard]] bytes::vector ComputePskBinder(
+        bytes::const_span pskSecret,
+        bytes::const_span truncatedCH) {
+    const auto binderContext = bytes::make_span(
+        reinterpret_cast<const bytes::type*>(kEmptySha256Hash.data()),
+        kSha256Size);
+    auto earlySecret = HkdfExtractSha256(binderContext, pskSecret);
+    auto binderKey = HkdfExpandLabel(
+        bytes::make_span(earlySecret),
+        "res binder",
+        binderContext,
+        kSha256Size);
+    uint8_t transcriptHash[kSha256Size];
+    SHA256(reinterpret_cast<const unsigned char*>(truncatedCH.data()),
+        truncatedCH.size(), transcriptHash);
+    auto binder = bytes::vector(kSha256Size);
+    unsigned int len = kSha256Size;
+    HMAC(EVP_sha256(),
+        reinterpret_cast<const unsigned char*>(binderKey.data()),
+        binderKey.size(),
+        transcriptHash,
+        kSha256Size,
+        reinterpret_cast<unsigned char*>(binder.data()),
+        &len);
+    return binder;
+}
+
 
 using BigNum = openssl::BigNum;
 using BigNumContext = openssl::Context;
@@ -579,6 +689,290 @@ ClientHello Generator::take() {
 	return Generator(rules, domain, key).take();
 }
 
+[[nodiscard]] ClientHello PrepareBoringSSLClientHello(
+		bytes::const_span domain,
+		bytes::const_span key,
+		const std::optional<TlsSocket::PskData> &psk) {
+	// Mimics Chrome 149 / BoringSSL ClientHello (mtproxy_tls2.py build_client_hello)
+	// Returns { record (full TLS record), digest (32-byte HMAC for server hello verification) }
+
+	const auto u16be = [&](uint16 v) {
+		const auto b = qToBigEndian(v);
+		return QByteArray(reinterpret_cast<const char*>(&b), 2);
+	};
+	const auto with16 = [&](const QByteArray &d) {
+		return u16be(d.size()).append(d);
+	};
+	const auto ext = [&](uint16 t, const QByteArray &p) {
+		return u16be(t).append(with16(p));
+	};
+
+	// GREASE seed: 6 bytes, each forced to 0x?A pattern
+	auto seed = bytes::vector(6);
+	base::RandomFill(seed.data(), seed.size());
+	for (int i = 0; i < 6; ++i) {
+		seed[i] = static_cast<bytes::type>(
+			(static_cast<uint8_t>(seed[i]) & 0xF0) | 0x0A);
+	}
+	const auto gv = [&](int i) -> char {
+		return char((static_cast<uint8_t>(seed[i]) & 0xF0) | 0x0A);
+	};
+	const auto g = [&](int i) { char c = gv(i); return QByteArray(2, c); };
+
+	// === Cipher Suites (Chrome 149 no-AES-HW order) ===
+	// GREASE + 15 suites: 1303, 1301, 1302, cca9, cca8, c02b, c02f, c02c, c030, c013, c014, 009c, 009d, 002f, 0035
+	const auto ciphers = g(0).append(
+		"\x13\x03\x13\x01\x13\x02\xcc\xa9\xcc\xa8"
+		"\xc0\x2b\xc0\x2f\xc0\x2c\xc0\x30\xc0\x13\xc0\x14"
+		"\x00\x9c\x00\x9d\x00\x2f\x00\x35", 32);  // 2 + 30 = 32 bytes (16 suites)
+
+	// === Extensions ===
+
+	// SNI (always first, not permuted)
+	const auto domainStr = QByteArray(
+		reinterpret_cast<const char*>(domain.data()), domain.size());
+	const auto sniExt = ext(0x0000,
+		with16(QByteArray(1, char(0)).append(with16(domainStr))));  // server_name_list + type=host_name
+
+	// Mandatory TLS 1.3 extensions (added to permutable list)
+	// supported_versions: [GREASE, TLS1.3, TLS1.2]
+	const auto svExt = ext(0x002b,
+		QByteArray(1, char(0x06)).append(g(1)).append("\x03\x04\x03\x03", 4));
+
+	// supported_groups: [GREASE, X25519MLKEM768, x25519, secp256r1, secp384r1]
+	const auto sgExt = ext(0x000a, with16(
+		g(3).append("\x11\xec\x00\x1d\x00\x17\x00\x18", 8)));
+
+	// key_share: GREASE(0-len key) + X25519MLKEM768(1216B random) + x25519(32B random)
+	auto x25519Pub = bytes::vector(32);
+	base::RandomFill(x25519Pub.data(), x25519Pub.size());
+	auto pqKey = bytes::vector(1216);
+	base::RandomFill(pqKey.data(), pqKey.size());
+	const auto ksExt = ext(0x0033, with16(
+		g(3)                                           // GREASE group
+		+ with16(QByteArray(1, char(0)))               // 1 zero byte key data
+		+ QByteArray("\x11\xec", 2)                    // X25519MLKEM768
+		+ with16(QByteArray(reinterpret_cast<const char*>(pqKey.data()), pqKey.size()))
+		+ QByteArray("\x00\x1d", 2)                    // x25519
+		+ with16(QByteArray(reinterpret_cast<const char*>(x25519Pub.data()), x25519Pub.size()))
+	));
+
+	// ALPN: h2, http/1.1
+	const auto alpnExt = ext(0x0010, with16(
+		QByteArray("\x02h2\x08http/1.1", 12)));
+
+	// signature_algorithms: 8 algorithms as Chrome 149
+	const auto sigAlgsPayload = with16(QByteArray(
+		"\x04\x03\x08\x04\x04\x01\x05\x03\x08\x05\x05\x01\x08\x06\x06\x01", 16));
+
+	// GREASE extension collision avoidance
+	char gv2[2] = { gv(2), gv(2) };
+	char gv4[2] = { gv(4), gv(4) };
+	if (gv4[0] == gv2[0] && gv4[1] == gv2[1]) {
+		gv4[0] ^= 0x10;
+		gv4[1] ^= 0x10;
+	}
+
+	// GREASE ECH extension (0xfe0d) — outer_type=0, kdf=HKDF-SHA256, aead=ChaCha20Poly1305
+	QByteArray echExt;
+	{
+		auto echPriv = bytes::vector(32);
+		base::RandomFill(echPriv.data(), 32);
+		// Clamp X25519 private key per RFC 7748
+		auto *p = reinterpret_cast<uint8_t*>(echPriv.data());
+		p[0] &= 248;
+		p[31] &= 127;
+		p[31] |= 64;
+		// Derive X25519 public key from clamped private key (matches Python _x25519_keypair)
+		const auto echKey = EVP_PKEY_new_raw_private_key(
+			NID_X25519,
+			nullptr,
+			reinterpret_cast<const unsigned char*>(echPriv.data()),
+			32);
+		auto echPub = bytes::vector(32);
+		if (echKey) {
+			size_t pubLen = 32;
+			EVP_PKEY_get_raw_public_key(
+				echKey,
+				reinterpret_cast<unsigned char*>(echPub.data()),
+				&pubLen);
+			EVP_PKEY_free(echKey);
+		}
+		const uint8 kInnerLen = 128 + (static_cast<uint8>(seed[0]) & 0x03) * 32; // 128/160/192/224
+		auto echInner = bytes::vector(kInnerLen + 16); // +16 for ChaCha20Poly1305 tag
+		base::RandomFill(echInner.data(), echInner.size());
+		const auto configId = QByteArray(1, static_cast<char>(seed[5]));
+		QByteArray echPayload;
+		echPayload.append('\x00');                          // outer_type
+		echPayload.append("\x00\x01\x00\x03", 4);           // kdf=HKDF-SHA256, aead=ChaCha20Poly1305
+		echPayload.append(configId);                        // config_id from seed[5]
+		echPayload.append("\x00\x20", 2);                   // enc_len=32
+		echPayload.append(reinterpret_cast<const char*>(echPub.data()), 32);
+		const auto payloadLen = qToBigEndian(quint16(echInner.size()));
+		echPayload.append(reinterpret_cast<const char*>(&payloadLen), 2);
+		echPayload.append(reinterpret_cast<const char*>(echInner.data()), echInner.size());
+		echExt = ext(0xfe0d, echPayload);
+	}
+
+	// Permutable extensions (shuffled) — stored as full encoded ext (type+len+payload)
+	QVector<QByteArray> perm;
+	perm.append(ext(0x0017, QByteArray()));                              // extended_master_secret
+	perm.append(ext(0xff01, QByteArray(1, char(0))));                    // renegotiation_info
+	perm.append(ext(0x000b, QByteArray("\x01\x00", 2)));                // ec_point_formats
+	perm.append(ext(0x0023, QByteArray()));                              // session_ticket
+	perm.append(ext(0x0005, QByteArray("\x01\x00\x00\x00\x00", 5)));   // status_request
+	perm.append(ext(0x000d, sigAlgsPayload));                            // signature_algorithms
+	perm.append(ext(0x0012, QByteArray()));                              // signed_cert_timestamp
+	perm.append(ext(0x002d, QByteArray("\x01\x01", 2)));                // psk_key_exchange_modes
+	perm.append(ext(0x001b, QByteArray("\x02\x00\x02", 3)));            // compress_certificate
+	perm.append(ext(0x44cd, QByteArray("\x00\x03\x02h2", 5)));          // application_settings
+	perm.append(svExt);                                                  // supported_versions
+	perm.append(sgExt);                                                  // supported_groups
+	perm.append(ksExt);                                                  // key_share
+	perm.append(alpnExt);                                                // ALPN
+	perm.append(ext(uint16(uint8_t(gv2[0]) << 8 | uint8_t(gv2[1])), QByteArray("\x00\x00", 2)));  // GREASE ext1
+	perm.append(ext(uint16(uint8_t(gv4[0]) << 8 | uint8_t(gv4[1])), QByteArray("\x00\x01\x00", 3))); // GREASE ext2
+	perm.append(echExt);                                                 // GREASE ECH
+
+	// === PSK extension (if we have a ticket from previous session) ===
+	QByteArray pskExt;
+	if (psk.has_value()) {
+		const auto &pskData = psk.value();
+		const auto ticketBytes = QByteArray(
+			reinterpret_cast<const char*>(pskData.ticket.data()),
+			pskData.ticket.size());
+		const auto ageMs = uint32_t(
+			(base::unixtime::http_now() - pskData.timestamp) * 1000
+			+ pskData.ticketAgeAdd);
+		const auto obfuscatedAge = qToBigEndian(ageMs);
+	
+		QByteArray pskIdentity;
+		pskIdentity.append(with16(ticketBytes));
+		pskIdentity.append(reinterpret_cast<const char*>(&obfuscatedAge), 4);
+	
+		QByteArray identities;
+		identities.append(pskIdentity);
+	
+		// Placeholder binder: 1 byte length (32) + 32 zero bytes
+		QByteArray binderPlaceholder;
+		binderPlaceholder.append(static_cast<char>(32));
+		binderPlaceholder.append(QByteArray(32, char(0)));
+	
+		QByteArray binders;
+		binders.append(with16(binderPlaceholder));
+	
+		QByteArray pskContents;
+		pskContents.append(with16(identities));
+		pskContents.append(with16(binders));
+	
+		pskExt = ext(kPskExtensionType, pskContents);
+	}
+
+
+	std::random_device rd;
+	std::mt19937 gen(rd());
+	std::shuffle(perm.begin(), perm.end(), gen);
+
+	QByteArray extBody = sniExt;
+	for (const auto &e : perm) {
+		extBody.append(e);
+	}
+	if (psk.has_value()) {
+		extBody.append(pskExt);
+	}
+	const auto extensions = with16(extBody);
+
+	// === Session ID ===
+	auto sid = bytes::vector(32);
+	base::RandomFill(sid.data(), 32);
+	const auto sessionID = QByteArray(1, char(32)).append(
+		reinterpret_cast<const char*>(sid.data()), 32);
+
+	// === Assemble ClientHello body (version + random + session_id + ciphers + compression + extensions) ===
+	auto body = QByteArray();
+	body.append("\x03\x03", 2);               // legacy_version = TLS 1.2
+	[[maybe_unused]] const auto digestPosition = body.size();
+	body.append(QByteArray(32, char(0)));      // random placeholder for HMAC
+	body.append(sessionID);
+	body.append(with16(ciphers));
+	body.append("\x01\x00", 2);                // compression_methods: [null]
+	body.append(extensions);
+
+	// === Wrap in handshake header first (python computes HMAC over full record) ===
+	QByteArray handshake;
+	handshake.append(char(1));  // ClientHello
+	const auto hsLen = qToBigEndian(quint32(body.size()));
+	handshake.append(reinterpret_cast<const char*>(&hsLen) + 1, 3);
+	handshake.append(body);
+
+	// === Wrap in TLS record ===
+	QByteArray record;
+	record.append("\x16\x03\x01", 3);
+	record.append(u16be(handshake.size()));
+	record.append(handshake);
+
+	// === HMAC-SHA256 over full record, inject into random field (bytes 11..43) ===
+	auto recordSpan = bytes::make_detached_span(record);
+	auto digestSpan = recordSpan.subspan(11, kHelloDigestLength);
+	auto keySpan = bytes::make_span(key);
+	bytes::copy(digestSpan, openssl::HmacSha256(keySpan, recordSpan));
+
+	// === PSK binder computation (RFC 8446 4.2.11.2) ===
+	if (psk.has_value()) {
+		const auto recData = reinterpret_cast<uint8_t*>(record.data());
+		const auto recLen = record.size();
+		constexpr uint16_t kPskExtType = 0x0029;
+		int psk_type_pos = -1;
+		const int kExtensionsStart = 114;
+		int pos = kExtensionsStart;
+		while (pos + 4 <= recLen) {
+			const uint16_t ext_type = (recData[pos] << 8) | recData[pos + 1];
+			const uint16_t ext_len = (recData[pos + 2] << 8) | recData[pos + 3];
+			if (ext_type == kPskExtType) {
+				psk_type_pos = pos;
+				break;
+			}
+			pos += 4 + ext_len;
+		}
+		if (psk_type_pos >= 0) {
+			const auto ticketLen = psk.value().ticket.size();
+			const int binder_offset = psk_type_pos + 9 + ticketLen + 6;
+			const uint8_t binder_len = recData[psk_type_pos + 8 + ticketLen + 6];
+			const int ch_offset = 5;
+			const int ch_hs_len = 1 + 3 +
+				((recData[6] << 16) | (recData[7] << 8) | recData[8]);
+			const int ch_len = ch_offset + ch_hs_len;
+			QByteArray truncatedCH = record.mid(ch_offset, ch_len);
+			auto truncData = reinterpret_cast<uint8_t*>(truncatedCH.data());
+			const int binder_in_ch = binder_offset - ch_offset;
+			std::memset(truncData + binder_in_ch, 0, binder_len);
+			const auto &pskTicket = psk.value().ticket;
+			auto pskSecret = bytes::make_span(
+				reinterpret_cast<const bytes::type*>(pskTicket.data()),
+				pskTicket.size());
+			const auto truncatedSpan = bytes::make_span(
+				reinterpret_cast<const bytes::type*>(truncatedCH.constData()),
+				truncatedCH.size());
+			auto binder = ComputePskBinder(pskSecret, truncatedSpan);
+			std::memcpy(recData + binder_offset, binder.data(), binder_len);
+		} else {
+		}
+	}
+
+	// XOR timestamp into digest[28..32] (last 4 bytes of random field = record bytes 39..43)
+	// In the HMAC output (digestSpan), offset 28..32
+	const auto ts = qToLittleEndian(int32(base::unixtime::http_now()));
+	const auto tsSpan = recordSpan.subspan(11 + kHelloDigestLength - sizeof(int32), sizeof(int32));
+	auto tsVal = int32();
+	bytes::copy(bytes::object_as_span(&tsVal), tsSpan);
+	tsVal ^= ts;
+	bytes::copy(tsSpan, bytes::object_as_span(&tsVal));
+
+	// Extract digest for server hello verification
+	auto helloDigest = record.mid(11, kHelloDigestLength);
+
+	return { record, helloDigest };
+}
 [[nodiscard]] bool CheckPart(bytes::const_span data, QLatin1String check) {
 	if (data.size() < check.size()) {
 		return false;
@@ -600,9 +994,11 @@ TlsSocket::TlsSocket(
 	not_null<QThread*> thread,
 	const bytes::vector &secret,
 	const QNetworkProxy &proxy,
-	bool protocolForFiles)
+	bool protocolForFiles,
+		MTP::ProxyData::ClientHello clientHello)
 : AbstractSocket(thread)
-, _secret(secret) {
+, _secret(secret)
+, _clientHello(clientHello) {
 	Expects(_secret.size() >= 21 && _secret[0] == bytes::type(0xEE));
 
 	_socket.moveToThread(thread);
@@ -653,10 +1049,9 @@ void TlsSocket::plainConnected() {
 	}
 
 	static const auto kClientHelloRules = PrepareClientHelloRules();
-	const auto hello = PrepareClientHello(
-		kClientHelloRules,
-		domainFromSecret(),
-		keyFromSecret());
+	const auto hello = (_clientHello == MTP::ProxyData::ClientHello::BoringSSL)
+		? PrepareBoringSSLClientHello(domainFromSecret(), keyFromSecret(), _psk)
+		: PrepareClientHello(kClientHelloRules, domainFromSecret(), keyFromSecret());
 	if (hello.data.isEmpty()) {
 		logError(888, "Could not generate Client Hello.");
 		_state = State::Error;
@@ -754,9 +1149,13 @@ void TlsSocket::checkHelloParts34(int parts123Size) {
 }
 
 void TlsSocket::checkHelloDigest() {
+	// HMAC is computed over client_digest + entire server response
+	// (ServerHello + CCS + app_data + any trailing ticket-mimic records).
+	// Some proxies (e.g. telemt) append fake NewSessionTicket ApplicationData
+	// records after the handshake and include them in the HMAC input.
 	const auto fulldata = bytes::make_detached_span(_incoming).subspan(
 		0,
-		kHelloDigestLength + _serverHelloLength);
+		_incoming.size());
 	const auto digest = fulldata.subspan(
 		kHelloDigestLength + kServerHelloDigestPosition,
 		kHelloDigestLength);
@@ -768,7 +1167,9 @@ void TlsSocket::checkHelloDigest() {
 		handleError();
 		return;
 	}
-	shiftIncomingBy(fulldata.size());
+	// Shift past ServerHello only; CCS + app_data + tickets remain in _incoming
+	// for parseNewSessionTickets() to process.
+	shiftIncomingBy(kHelloDigestLength + _serverHelloLength);
 	if (!_incoming.isEmpty()) {
 		InvokeQueued(this, [=] {
 			if (!checkNextPacket()) {
@@ -777,6 +1178,7 @@ void TlsSocket::checkHelloDigest() {
 		});
 	}
 	_incomingGoodDataOffset = _incomingGoodDataLimit = 0;
+	parseNewSessionTickets();
 	_state = State::Connected;
 	_connected.fire({});
 }
@@ -791,6 +1193,85 @@ void TlsSocket::readData() {
 	} else if (hasBytesAvailable()) {
 		_readyRead.fire({});
 	}
+}
+
+void TlsSocket::parseNewSessionTickets() {
+    auto data = bytes::make_span(_incoming);
+    auto offset = size_t(0);
+    while (offset + 5 <= data.size()) {
+        uint8_t record_type = static_cast<uint8_t>(data[offset]);
+        uint16_t record_len = (uint16_t(static_cast<uint8_t>(data[offset+3])) << 8)
+            | uint16_t(static_cast<uint8_t>(data[offset+4]));
+        if (offset + 5 + record_len > data.size()) {
+            break;
+        }
+        const auto record_data = data.subspan(offset + 5, record_len);
+        bool parsed = false;
+        if (record_type == 0x16 && record_data.size() >= 4) {
+            uint8_t hs_type = static_cast<uint8_t>(record_data[0]);
+            uint32_t hs_len = (uint32_t(static_cast<uint8_t>(record_data[1])) << 16)
+                | (uint32_t(static_cast<uint8_t>(record_data[2])) << 8)
+                | uint32_t(static_cast<uint8_t>(record_data[3]));
+            if (hs_type == 0x04 && record_data.size() >= 4 + hs_len) {
+                parsed = parseNewSessionTicketData(
+                    record_data.subspan(4, hs_len));
+            }
+        } else if (record_type == 0x17 && record_data.size() >= 4) {
+            uint8_t hs_type = static_cast<uint8_t>(record_data[0]);
+            if (hs_type == 0x04) {
+                uint32_t hs_len = (uint32_t(static_cast<uint8_t>(record_data[1])) << 16)
+                    | (uint32_t(static_cast<uint8_t>(record_data[2])) << 8)
+                    | uint32_t(static_cast<uint8_t>(record_data[3]));
+                if (record_data.size() >= 4 + hs_len) {
+                    parsed = parseNewSessionTicketData(
+                        record_data.subspan(4, hs_len));
+                }
+            }
+        }
+        if (parsed) {
+        }
+        offset += 5 + record_len;
+    }
+}
+
+bool TlsSocket::parseNewSessionTicketData(bytes::const_span data) {
+    size_t pos = 0;
+    uint32_t ticket_lifetime = 0, ticket_age_add = 0;
+    uint16_t ticket_len = 0;
+    uint8_t nonce_len = 0;
+    if (pos + 4 > data.size()) return false;
+    auto b0 = static_cast<uint8_t>(data[pos]);
+    auto b1 = static_cast<uint8_t>(data[pos+1]);
+    auto b2 = static_cast<uint8_t>(data[pos+2]);
+    auto b3 = static_cast<uint8_t>(data[pos+3]);
+    ticket_lifetime = (uint32_t(b0) << 24) | (uint32_t(b1) << 16)
+        | (uint32_t(b2) << 8) | uint32_t(b3);
+    pos += 4;
+    if (pos + 4 > data.size()) return false;
+    b0 = static_cast<uint8_t>(data[pos]);
+    b1 = static_cast<uint8_t>(data[pos+1]);
+    b2 = static_cast<uint8_t>(data[pos+2]);
+    b3 = static_cast<uint8_t>(data[pos+3]);
+    ticket_age_add = (uint32_t(b0) << 24) | (uint32_t(b1) << 16)
+        | (uint32_t(b2) << 8) | uint32_t(b3);
+    pos += 4;
+    if (pos + 1 > data.size()) return false;
+    nonce_len = static_cast<uint8_t>(data[pos]);
+    pos += 1;
+    if (pos + nonce_len > data.size()) return false;
+    pos += nonce_len;
+    if (pos + 2 > data.size()) return false;
+    ticket_len = (uint16_t(static_cast<uint8_t>(data[pos])) << 8)
+        | uint16_t(static_cast<uint8_t>(data[pos+1]));
+    pos += 2;
+    if (pos + ticket_len > data.size()) return false;
+    PskData psk;
+    psk.ticket = bytes::vector(ticket_len);
+    std::memcpy(psk.ticket.data(), data.data() + pos, ticket_len);
+    psk.ticketAgeAdd = ticket_age_add;
+    psk.timestamp = base::unixtime::http_now();
+    _psk = std::move(psk);
+    return true;
 }
 
 bool TlsSocket::checkNextPacket() {

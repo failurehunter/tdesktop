@@ -126,7 +126,7 @@ QByteArray SettingsProxy::serialize() const {
 			0,
 			ranges::plus(),
 			&Serialize::bytearraySize)
-		+ (4 + int(_proxyRotationPreferredIndices.size())) * sizeof(qint32);
+		+ (5 + int(_proxyRotationPreferredIndices.size())) * sizeof(qint32);
 	auto stream = Serialize::ByteArrayWriter(size);
 	stream
 		<< qint32(_tryIPv6 ? 1 : 0)
@@ -141,6 +141,7 @@ QByteArray SettingsProxy::serialize() const {
 		<< qint32(_checkIpWarningShown ? 1 : 0)
 		<< qint32(_proxyRotationEnabled ? 1 : 0)
 		<< qint32(_proxyRotationTimeout)
+		<< qint32(static_cast<int>(_clientHello.load(std::memory_order_relaxed)))
 		<< qint32(_proxyRotationPreferredIndices.size());
 	for (const auto index : _proxyRotationPreferredIndices) {
 		stream << qint32(index);
@@ -194,6 +195,10 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
 	if (!stream.atEnd()) {
 		stream >> proxyRotationTimeout;
 	}
+	auto clientHello = qint32(static_cast<int>(MTP::ProxyData::ClientHello::Default));
+	if (!stream.atEnd()) {
+		stream >> clientHello;
+	}
 	auto preferredCount = qint32(0);
 	auto preferredIndices = std::vector<int>();
 	if (!stream.atEnd()) {
@@ -222,6 +227,7 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
 	_checkIpWarningShown = (checkIpWarningShown == 1);
 	_proxyRotationEnabled = (proxyRotationEnabled == 1);
 	setProxyRotationTimeout(proxyRotationTimeout);
+	_clientHello = static_cast<MTP::ProxyData::ClientHello>(clientHello);
 	_settings = IntToProxySettings(settings);
 	_selected = DeserializeProxyData(selectedProxy);
 	_list = std::move(list);
@@ -316,6 +322,15 @@ MTP::ProxyData::Settings SettingsProxy::settings() const {
 
 void SettingsProxy::setSettings(MTP::ProxyData::Settings value) {
 	_settings = value;
+}
+
+MTP::ProxyData::ClientHello SettingsProxy::clientHello() const {
+	return _clientHello.load(std::memory_order_relaxed);
+}
+
+void SettingsProxy::setClientHello(MTP::ProxyData::ClientHello value) {
+	_clientHello.store(value, std::memory_order_relaxed);
+	_clientHelloChanged.fire_copy(value);
 }
 
 MTP::ProxyData SettingsProxy::selected() const {

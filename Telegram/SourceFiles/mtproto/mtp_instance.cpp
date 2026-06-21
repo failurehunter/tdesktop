@@ -370,6 +370,13 @@ Instance::Private::Private(
 			_configLoader->setProxyEnabled(_proxySettings.isEnabled());
 		}
 	}, _lifetime);
+
+	_proxySettings.clientHelloChanged(
+	) | rpl::on_next([=](MTP::ProxyData::ClientHello value) {
+		for (const auto &[shiftedDcId, session] : _sessions) {
+			session->reconnect();
+		}
+	}, _lifetime);
 }
 
 void Instance::Private::start() {

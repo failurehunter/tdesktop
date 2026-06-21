@@ -84,6 +84,7 @@ public:
 	object_ptr<Ui::BoxContent> editItemBox(int id);
 	object_ptr<Ui::BoxContent> addNewItemBox();
 	bool setProxySettings(ProxyData::Settings value);
+	void setClientHello(MTP::ProxyData::ClientHello value);
 	void setProxyForCalls(bool enabled);
 	void setProxyRotationEnabled(bool enabled);
 	void setProxyRotationTimeout(int value);
@@ -96,6 +97,8 @@ public:
 	rpl::producer<ItemView> views() const;
 
 	rpl::producer<bool> listShareableChanges() const;
+
+	void refreshSelectedChecker();
 
 	~ProxiesBoxController();
 

@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/connection_tcp.h"
 
 #include "mtproto/details/mtproto_abstract_socket.h"
+#include "mtproto/mtproto_proxy_data.h"
 #include "base/bytes.h"
 #include "base/openssl_help.h"
 #include "base/random.h"
@@ -251,6 +252,7 @@ TcpConnection::TcpConnection(
 : AbstractConnection(thread, proxy)
 , _instance(instance)
 , _checkNonce(base::RandomValue<MTPint128>()) {
+	fprintf(stderr, "TcpConnection ctor: _proxy.clientHello=%d\n", int(_proxy.clientHello));
 }
 
 ConnectionPointer TcpConnection::clone(const ProxyData &proxy) {
@@ -526,11 +528,12 @@ void TcpConnection::connectToServer(
 		_port = port;
 		_protocol = Protocol::Create(secret);
 	}
-	_socket = AbstractSocket::Create(
+		_socket = AbstractSocket::Create(
 		thread(),
 		secret,
 		ToNetworkProxy(_proxy),
-		protocolForFiles);
+		protocolForFiles,
+		_proxy.clientHello);
 	_protocolDcId = protocolDcId;
 
 	const auto postfix = _socket->debugPostfix();

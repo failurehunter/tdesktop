@@ -47,6 +47,7 @@ public:
 
 	void updateAuthKey();
 	void restartNow();
+	void reconnectNow();
 	void sendPingForce();
 	void tryToSend();
 

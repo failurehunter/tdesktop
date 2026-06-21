@@ -225,7 +225,8 @@ ProxyData ToDirectIpProxy(const ProxyData &proxy, int ipIndex) {
 		proxy.resolvedIPs[ipIndex],
 		proxy.port,
 		proxy.user,
-		proxy.password
+		proxy.password,
+		proxy.clientHello
 	};
 }
 

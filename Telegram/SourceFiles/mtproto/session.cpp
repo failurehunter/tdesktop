@@ -236,6 +236,19 @@ void Session::restart() {
 	}
 }
 
+void Session::reconnect() {
+	if (_killed) {
+		DEBUG_LOG(("Session Error: can't reconnect a killed session"));
+		return;
+	}
+	refreshOptions();
+	if (const auto captured = _private) {
+		InvokeQueued(captured, [=] {
+			captured->reconnectNow();
+		});
+	}
+}
+
 void Session::refreshOptions() {
 	auto &settings = Core::App().settings().proxy();
 	const auto &proxy = settings.selected();
@@ -245,11 +258,14 @@ void Session::refreshOptions() {
 	const auto useHttp = (proxyType != ProxyData::Type::Mtproto);
 	const auto useIPv4 = true;
 	const auto useIPv6 = settings.tryIPv6();
+	const auto clientHello = settings.clientHello();
 	_data->setOptions(SessionOptions(
 		_instance->systemLangCode(),
 		_instance->cloudLangCode(),
 		_instance->langPackName(),
-		(isEnabled ? proxy : ProxyData()),
+		(isEnabled
+			? ProxyData{ proxy.type, proxy.host, proxy.port, proxy.user, proxy.password, clientHello }
+			: ProxyData()),
 		useIPv4,
 		useIPv6,
 		useHttp,

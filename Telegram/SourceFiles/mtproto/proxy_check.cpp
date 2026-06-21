@@ -45,7 +45,8 @@ void StartProxyCheck(
 		ProxyCheckConnection &v4,
 		ProxyCheckConnection &v6,
 		Fn<void(Connection *raw, int ping)> done,
-		Fn<void(Connection *raw)> fail) {
+		Fn<void(Connection *raw)> fail,
+		ProxyData::ClientHello clientHello) {
 	using Variants = DcOptions::Variants;
 
 	ResetProxyCheckers(v4, v6);
@@ -54,12 +55,20 @@ void StartProxyCheck(
 		: Variants::Tcp;
 	const auto dcId = mtproto->mainDcId();
 	const auto setup = [&](ProxyCheckConnection &checker, const bytes::vector &secret) {
+		const auto proxyWithHello = ProxyData{
+			proxy.type,
+			proxy.host,
+			proxy.port,
+			proxy.user,
+			proxy.password,
+			clientHello,
+		};
 		checker = Connection::Create(
 			mtproto,
 			connType,
 			QThread::currentThread(),
 			secret,
-			proxy);
+			proxyWithHello);
 		const auto raw = checker.get();
 		raw->connect(raw, &Connection::connected, [=] {
 			if (done) {

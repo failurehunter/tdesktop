@@ -10,6 +10,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_proxy_data.h"
 
 #include <array>
+#include <atomic>
+#include <atomic>
 
 namespace Core {
 
@@ -70,6 +72,10 @@ public:
 		MTP::ProxyData value);
 	[[nodiscard]] int indexInList(const MTP::ProxyData &value) const;
 
+	[[nodiscard]] MTP::ProxyData::ClientHello clientHello() const;
+	void setClientHello(MTP::ProxyData::ClientHello value);
+	auto clientHelloChanged() const { return _clientHelloChanged.events(); }
+
 	[[nodiscard]] QByteArray serialize() const;
 	bool setFromSerialized(const QByteArray &serialized);
 
@@ -83,8 +89,9 @@ private:
 	MTP::ProxyData _selected;
 	std::vector<MTP::ProxyData> _list;
 	std::vector<int> _proxyRotationPreferredIndices;
-
+	std::atomic<MTP::ProxyData::ClientHello> _clientHello{MTP::ProxyData::ClientHello::Default};
 	rpl::event_stream<> _connectionTypeChanges;
+	rpl::event_stream<MTP::ProxyData::ClientHello> _clientHelloChanged;
 
 };
 

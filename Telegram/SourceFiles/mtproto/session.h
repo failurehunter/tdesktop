@@ -145,6 +145,7 @@ public:
 	void setConnectionNotInited();
 
 	void restart();
+	void reconnect();
 	void refreshOptions();
 	void stop();
 	void kill();

@@ -1008,6 +1008,13 @@ void SessionPrivate::restartNow() {
 	restart();
 }
 
+void SessionPrivate::reconnectNow() {
+	_retryTimeout = 1;
+	_retryTimer.cancel();
+	doDisconnect();
+	connectToServer();
+}
+
 void SessionPrivate::connectToServer(bool afterConfig) {
 	if (afterConfig && (!_testConnections.empty() || _connection)) {
 		return;
@@ -1020,7 +1027,8 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 		return;
 	}
 
-	_options = std::make_unique<SessionOptions>(_sessionData->options());
+	auto freshOptions = _sessionData->options();
+		_options = std::make_unique<SessionOptions>(freshOptions);
 
 	const auto bareDc = BareDcId(_shiftedDcId);
 

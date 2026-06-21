@@ -102,6 +102,10 @@ public:
 	[[nodiscard]] virtual QString transport() const = 0;
 	[[nodiscard]] virtual QString tag() const = 0;
 
+	void setProxyClientHello(ProxyData::ClientHello clientHello) {
+		_proxy.clientHello = clientHello;
+	}
+
 	void setSentEncryptedWithKeyId(uint64 keyId) {
 		_sentEncryptedWithKeyId = keyId;
 	}

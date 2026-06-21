@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/bytes.h"
 #include "base/basic_types.h"
+#include "mtproto/mtproto_proxy_data.h"
 
 namespace MTP::details {
 
@@ -18,7 +19,8 @@ public:
 		not_null<QThread*> thread,
 		const bytes::vector &secret,
 		const QNetworkProxy &proxy,
-		bool protocolForFiles);
+		bool protocolForFiles,
+			MTP::ProxyData::ClientHello clientHello = MTP::ProxyData::ClientHello::Default);
 
 	void setDebugId(const QString &id) {
 		_debugId = id;

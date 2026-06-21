@@ -623,6 +623,7 @@ private:
 	Core::SettingsProxy &_settings;
 	QPointer<Ui::Checkbox> _tryIPv6;
 	std::shared_ptr<Ui::RadioenumGroup<ProxyData::Settings>> _proxySettings;
+	std::shared_ptr<Ui::RadioenumGroup<MTP::ProxyData::ClientHello>> _clientHello;
 	QPointer<Ui::SlideWrap<Ui::Checkbox>> _proxyForCalls;
 	QPointer<Ui::SlideWrap<Ui::Checkbox>> _proxyRotation;
 	QPointer<Ui::SlideWrap<Ui::VerticalLayout>> _proxyRotationOptions;
@@ -1129,6 +1130,22 @@ void ProxiesBox::setupContent() {
 			ProxyData::Settings::Enabled,
 			tr::lng_proxy_use_custom(tr::now)),
 		st::proxyUsePadding);
+	_clientHello = std::make_shared<Ui::RadioenumGroup<MTP::ProxyData::ClientHello>>(
+		_settings.clientHello());
+	inner->add(
+		object_ptr<Ui::Radioenum<MTP::ProxyData::ClientHello>>(
+			inner,
+			_clientHello,
+			MTP::ProxyData::ClientHello::Default,
+			tr::lng_client_hello_default(tr::now)),
+		st::proxyUsePadding);
+	inner->add(
+		object_ptr<Ui::Radioenum<MTP::ProxyData::ClientHello>>(
+			inner,
+			_clientHello,
+			MTP::ProxyData::ClientHello::BoringSSL,
+			tr::lng_client_hello_boringssl(tr::now)),
+		st::proxyUsePadding);
 	_proxyForCalls = inner->add(
 		object_ptr<Ui::SlideWrap<Ui::Checkbox>>(
 			inner,
@@ -1215,6 +1232,9 @@ void ProxiesBox::setupContent() {
 	) | rpl::on_next([=](bool checked) {
 		_controller->setTryIPv6(checked);
 	}, _tryIPv6->lifetime());
+	_clientHello->setChangedCallback([=](MTP::ProxyData::ClientHello value) {
+		_controller->setClientHello(value);
+	});
 
 	_controller->proxySettingsValue(
 	) | rpl::on_next([=](ProxyData::Settings value) {
