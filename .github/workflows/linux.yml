@@ -107,15 +107,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: out
-          key: build-${{ runner.os }}-${{ matrix.defines || 'null' }}-${{ hashFiles('**/CMakeLists.txt', '**/CMakeLists.txt.user', '**/*.cmake', '**/cmake/**') }}
-          restore-keys: build-${{ runner.os }}-${{ matrix.defines || 'null' }}-
+          key: build-${{ runner.os }}-${{ matrix.defines || 'null' }}-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake', '**/cmake/**') }}-${{ github.sha }}
+          restore-keys: |
+            build-${{ runner.os }}-${{ matrix.defines || 'null' }}-${{ hashFiles('**/CMakeLists.txt', '**/*.cmake', '**/cmake/**') }}-
+            build-${{ runner.os }}-${{ matrix.defines || 'null' }}-
 
       - name: Cache ccache directory.
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/.tdesktop-cache
-          key: ccache-${{ runner.os }}-${{ matrix.defines || 'null' }}-${{ hashFiles('**/CMakeLists.txt') }}
-          restore-keys: ccache-${{ runner.os }}-${{ matrix.defines || 'null' }}-
+          key: ccache-${{ runner.os }}-${{ matrix.defines || 'null' }}-${{ hashFiles('**/CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ matrix.defines || 'null' }}-${{ hashFiles('**/CMakeLists.txt') }}-
+            ccache-${{ runner.os }}-${{ matrix.defines || 'null' }}-
 
       - name: Telegram Desktop build.
         if: env.ONLY_CACHE == 'false'
