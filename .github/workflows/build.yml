@@ -1,0 +1,84 @@
+name: Build
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build \
+            libssl-dev libglib2.0-dev libx11-dev \
+            libxss-dev libxcomposite-dev libxdamage-dev \
+            libxrandr-dev libxshmfence-dev libxtst-dev \
+            libnss3-dev libasound2-dev libpulse-dev \
+            libpango1.0-dev libcairo2-dev libgdk-pixbuf2.0-dev \
+            libgtk-3-dev libatspi2.0-dev \
+            qt6-base-dev qt6-base-dev-tools \
+            qt6-tools-dev qt6-tools-dev-tools \
+            qt6-declarative-dev qt6-svg-dev \
+            qt6-wayland-dev \
+            libkf6coreaddons-dev \
+            libgl1-mesa-dev \
+            libqrencode-dev libcmark-gfm-dev \
+            librlottie-dev libwebp-dev \
+            libprotobuf-dev protobuf-compiler \
+            libunwind-dev \
+            libsysprof-capture-4-dev \
+            libsecret-1-dev libgcrypt20-dev \
+            libgpg-error-dev libassuan-dev \
+            libexpat1-dev libfontconfig1-dev \
+            libfreetype6-dev libharfbuzz-dev \
+            libfribidi-dev \
+            libxkbcommon-dev \
+            libzip-dev libminizip-dev \
+            libdouble-conversion-dev libicu-dev \
+            libxslt1-dev libxml2-dev libsqlite3-dev \
+            libcurl4-openssl-dev \
+            libnghttp2-dev libnghttp3-dev \
+            libuv1-dev \
+            libidn2-dev libpsl-dev \
+            libssh2-1-dev \
+            libldap2-dev libkrb5-dev \
+            libsasl2-dev \
+            libsystemd-dev libudev-dev \
+            libmount-dev libblkid-dev libfdisk-dev \
+            libsmartcols-dev libuuid-dev \
+            libgomp1 libgcc-14-dev g++-14
+
+      - name: Configure
+        run: |
+          mkdir -p build
+          cd build
+          cmake .. \
+            -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc-14 \
+            -DCMAKE_CXX_COMPILER=g++-14 \
+            -DTDESKTOP_API_ID=${{ secrets.TDESKTOP_API_ID }} \
+            -DTDESKTOP_API_HASH=${{ secrets.TDESKTOP_API_HASH }} \
+            -DTDESKTOP_DISABLE_CRASH_REPORTS=ON \
+            -DTDESKTOP_DISABLE_AUTOUPDATE=ON \
+            -DDESKTOP_APP_USE_PACKAGED=ON
+
+      - name: Build
+        run: |
+          cd build
+          ninja -j$(nproc)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-linux
+          path: build/Telegram/Telegram
+          retention-days: 7
