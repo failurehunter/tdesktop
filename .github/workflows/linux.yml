@@ -56,13 +56,18 @@ jobs:
     env:
       ONLY_CACHE: "false"
       IMAGE_TAG: tdesktop:centos_env
-      GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/tdesktop:centos_env-${{ hashFiles('Telegram/build/docker/centos_env/**') }}
 
     steps:
       - name: Clone.
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Compute image tag.
+        id: tag
+        run: |
+          HASH=$(sha256sum Telegram/build/docker/centos_env/Dockerfile Telegram/build/docker/centos_env/poetry.lock Telegram/build/docker/centos_env/pyproject.toml | sha256sum | cut -c1-12)
+          echo "GHCR_IMAGE=ghcr.io/${{ github.repository_owner }}/tdesktop:centos_env-$HASH" >> $GITHUB_ENV
 
       - name: Set up Docker Buildx.
         id: setup-buildx
