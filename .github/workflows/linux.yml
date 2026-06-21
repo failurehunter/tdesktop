@@ -41,21 +41,17 @@ on:
       - 'Telegram/Telegram.plist'
   workflow_dispatch:
 
+concurrency:
+  group: linux-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
 
-  linux:
-    name: Rocky Linux 8 Docker
+  build-image:
+    name: Build Docker image
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        defines:
-          - ""
-          - "DESKTOP_APP_DISABLE_X11_INTEGRATION"
-
-    env:
-      ONLY_CACHE: "false"
-      IMAGE_TAG: tdesktop:centos_env
+    outputs:
+      image_tag: ${{ steps.tag.outputs.ghcr_image }}
 
     steps:
       - name: Clone.
@@ -67,10 +63,9 @@ jobs:
         id: tag
         run: |
           HASH=$(sha256sum Telegram/build/docker/centos_env/Dockerfile Telegram/build/docker/centos_env/poetry.lock Telegram/build/docker/centos_env/pyproject.toml | sha256sum | cut -c1-12)
-          echo "GHCR_IMAGE=ghcr.io/${{ github.repository_owner }}/tdesktop:centos_env-$HASH" >> $GITHUB_ENV
+          echo "ghcr_image=ghcr.io/${{ github.repository_owner }}/tdesktop:centos_env-$HASH" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx.
-        id: setup-buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Login to GitHub Container Registry.
@@ -90,18 +85,37 @@ jobs:
           echo "$DOCKERFILE" > Dockerfile
           rm -rf __pycache__
 
-      - name: Pull cached Docker image.
-        run: |
-          docker pull $GHCR_IMAGE || true
-
-      - name: Build Docker image with cache.
+      - name: Build and push Docker image.
         uses: docker/build-push-action@v6
         with:
           context: Telegram/build/docker/centos_env
-          load: true
-          tags: ${{ env.IMAGE_TAG }}
-          cache-from: type=registry,ref=${{ env.GHCR_IMAGE }}
-          cache-to: type=registry,ref=${{ env.GHCR_IMAGE }},mode=max
+          push: true
+          tags: ${{ steps.tag.outputs.ghcr_image }}
+          cache-from: type=registry,ref=${{ steps.tag.outputs.ghcr_image }}
+          cache-to: type=registry,ref=${{ steps.tag.outputs.ghcr_image }},mode=max,compression=zstd
+
+  linux:
+    name: Rocky Linux 8 Docker
+    needs: build-image
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        defines:
+          - ""
+          - "DESKTOP_APP_DISABLE_X11_INTEGRATION"
+
+    env:
+      ONLY_CACHE: "false"
+
+    steps:
+      - name: Clone.
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Pull Docker image.
+        run: docker pull ${{ needs.build-image.outputs.image_tag }}
 
       - name: Cache build directory.
         uses: actions/cache@v4
@@ -141,7 +155,7 @@ jobs:
             -v ${{ runner.temp }}/.tdesktop-cache:/var/cache/ccache \
             -e CONFIG=Release \
             -e CCACHE_SLOPPINESS=pch_defines,time_macros \
-            $IMAGE_TAG \
+            ${{ needs.build-image.outputs.image_tag }} \
             env -u CCACHE_DISABLE /usr/src/tdesktop/Telegram/build/docker/centos_env/build.sh \
             -D CMAKE_CONFIGURATION_TYPES=Release \
             -D TDESKTOP_API_ID=${{ secrets.TDESKTOP_API_ID }} \
@@ -149,3 +163,9 @@ jobs:
             -D TDESKTOP_DISABLE_CRASH_REPORTS=ON \
             -D TDESKTOP_DISABLE_AUTOUPDATE=ON \
             $DEFINE
+
+      - name: Upload artifact.
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: out/Telegram
