@@ -60,15 +60,8 @@ jobs:
           mkdir -p _deps/ada-src
           curl -sL https://github.com/ada-url/ada/releases/download/v3.4.3/ada-singleheader.zip -o _deps/ada.zip
           cd _deps && unzip -o ada.zip -d ada-src && rm ada.zip
-          mkdir -p _deps/ada-src/lib/cmake/ada
-          cat > _deps/ada-src/lib/cmake/ada/AdaConfig.cmake << 'EOF'
-          add_library(ada::ada INTERFACE IMPORTED)
-          set_target_properties(ada::ada PROPERTIES
-            INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_LIST_DIR}/../../include"
-          )
-          EOF
-          mkdir -p _deps/ada-src/include
-          find _deps/ada-src -name "ada.h" -exec cp {} _deps/ada-src/include/ \;
+          ls -la _deps/ada-src/
+          find _deps/ada-src -name "*.h" -o -name "*.hpp" | head -5
 
       - name: Configure
         run: |
@@ -84,7 +77,9 @@ jobs:
             -DTDESKTOP_DISABLE_CRASH_REPORTS=ON \
             -DTDESKTOP_DISABLE_AUTOUPDATE=ON \
             -DDESKTOP_APP_USE_PACKAGED=ON \
-            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/_deps/ada-src
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/_deps/ada-src \
+            -Dada_DIR=${{ github.workspace }}/_deps/ada-src \
+            -Dada_DIR=${{ github.workspace }}/_deps/ada-src
 
       - name: Build
         run: |
