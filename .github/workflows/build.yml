@@ -55,13 +55,13 @@ jobs:
             libsmartcols-dev uuid-dev \
             libgomp1 libgcc-14-dev g++-14
 
-      - name: Fetch ada
+      - name: Install ada-url
         run: |
-          mkdir -p _deps/ada-src
-          curl -sL https://github.com/ada-url/ada/releases/download/v3.4.3/ada-singleheader.zip -o _deps/ada.zip
-          cd _deps && unzip -o ada.zip -d ada-src && rm ada.zip
-          ls -la _deps/ada-src/
-          find _deps/ada-src -name "*.h" -o -name "*.hpp" | head -5
+          git clone --depth 1 https://github.com/ada-url/ada.git
+          cd ada
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DADA_TESTING=OFF -DADA_TOOLS=OFF
+          cmake --build build --parallel
+          sudo cmake --install build
 
       - name: Configure
         run: |
@@ -77,8 +77,6 @@ jobs:
             -DTDESKTOP_DISABLE_CRASH_REPORTS=ON \
             -DTDESKTOP_DISABLE_AUTOUPDATE=ON \
             -DDESKTOP_APP_USE_PACKAGED=ON \
-            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/_deps/ada-src \
-            -Dada_DIR=${{ github.workspace }}/_deps/ada-src \
             -Dada_DIR=${{ github.workspace }}/_deps/ada-src
 
       - name: Build
