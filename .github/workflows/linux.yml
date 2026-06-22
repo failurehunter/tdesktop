@@ -52,6 +52,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.tag.outputs.ghcr_image }}
+      cache_tag: ${{ steps.tag.outputs.ghcr_cache }}
+      cache_tag: ${{ steps.tag.outputs.ghcr_cache }}
 
     steps:
       - name: Clone.
@@ -64,6 +66,8 @@ jobs:
         run: |
           HASH=$(sha256sum Telegram/build/docker/centos_env/Dockerfile Telegram/build/docker/centos_env/poetry.lock Telegram/build/docker/centos_env/pyproject.toml | sha256sum | cut -c1-12)
           echo "ghcr_image=ghcr.io/${{ github.repository_owner }}/tdesktop:centos_env-$HASH" >> $GITHUB_OUTPUT
+          echo "ghcr_cache=ghcr.io/${{ github.repository_owner }}/tdesktop:centos_env-$HASH-cache" >> $GITHUB_OUTPUT
+          echo "ghcr_cache=ghcr.io/${{ github.repository_owner }}/tdesktop:centos_env-$HASH-cache" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx.
         uses: docker/setup-buildx-action@v3
@@ -91,8 +95,8 @@ jobs:
           context: Telegram/build/docker/centos_env
           push: true
           tags: ${{ steps.tag.outputs.ghcr_image }}
-          cache-from: type=registry,ref=${{ steps.tag.outputs.ghcr_image }}
-          cache-to: type=registry,ref=${{ steps.tag.outputs.ghcr_image }},mode=max,compression=zstd
+          cache-from: type=registry,ref=${{ steps.tag.outputs.ghcr_cache }}
+          cache-to: type=registry,ref=${{ steps.tag.outputs.ghcr_cache }},mode=max,compression=zstd
 
   linux:
     name: Rocky Linux 8 Docker
