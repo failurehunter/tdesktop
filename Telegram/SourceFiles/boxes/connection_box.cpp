@@ -2346,6 +2346,28 @@ void ProxiesBoxController::setTryIPv6(bool enabled) {
 	saveDelayed();
 }
 
+void ProxiesBoxController::setClientHello(
+		MTP::ProxyData::ClientHello value) {
+	if (Core::App().settings().proxy().clientHello() == value) {
+		return;
+	}
+	Core::App().settings().proxy().setClientHello(value);
+	_account->mtp().restart();
+	_settings.connectionTypeChangesNotify();
+	saveDelayed();
+}
+
+void ProxiesBoxController::setClientHello(
+		MTP::ProxyData::ClientHello value) {
+	if (Core::App().settings().proxy().clientHello() == value) {
+		return;
+	}
+	Core::App().settings().proxy().setClientHello(value);
+	_account->mtp().restart();
+	_settings.connectionTypeChangesNotify();
+	saveDelayed();
+}
+
 void ProxiesBoxController::saveDelayed() {
 	Core::App().proxyRotationSettingsChanged();
 	_saveTimer.callOnce(kSaveSettingsDelayedTimeout);
