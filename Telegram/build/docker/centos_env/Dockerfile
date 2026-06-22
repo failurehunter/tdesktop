@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1
+# rebuilt to fix GHCR cache manifests
 
 FROM rockylinux:8 AS builder
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
