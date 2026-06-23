@@ -169,10 +169,10 @@ jobs:
       - name: Check binary exists.
         run: |
           if [ ! -f "out/Telegram" ]; then
-          echo "ERROR: out/Telegram binary not found!"
-          ls -la out/ 2>/dev/null || echo "out/ directory does not exist"
-          exit 1
-        fi
+            echo "ERROR: out/Telegram binary not found!"
+            ls -la out/ 2>/dev/null || echo "out/ directory does not exist"
+            exit 1
+          fi
           file out/Telegram
           ls -lh out/Telegram
 
