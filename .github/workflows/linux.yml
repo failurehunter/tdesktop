@@ -166,6 +166,22 @@ jobs:
             -D TDESKTOP_DISABLE_AUTOUPDATE=ON \
             $DEFINE
 
+      - name: Show ccache stats.
+        if: always()
+        run: |
+          docker run --rm \
+            -v ${{ runner.temp }}/.tdesktop-cache:/var/cache/ccache \
+            ${{ needs.build-image.outputs.image_tag }} \
+            ccache --show-stats
+
+      - name: Show ccache stats.
+        if: always()
+        run: |
+          docker run --rm \
+            -v ${{ runner.temp }}/.tdesktop-cache:/var/cache/ccache \
+            ${{ needs.build-image.outputs.image_tag }} \
+            ccache --show-stats
+
       - name: Check binary exists.
         run: |
           BIN="out/Release/Telegram"
