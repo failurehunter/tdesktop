@@ -168,16 +168,18 @@ jobs:
 
       - name: Check binary exists.
         run: |
-          if [ ! -f "out/Telegram" ]; then
-            echo "ERROR: out/Telegram binary not found!"
+          BIN="out/Release/Telegram"
+          if [ ! -f "$BIN" ]; then
+            echo "ERROR: $BIN not found!"
             ls -la out/ 2>/dev/null || echo "out/ directory does not exist"
+            ls -la out/Release/ 2>/dev/null || echo "out/Release/ directory does not exist"
             exit 1
           fi
-          file out/Telegram
-          ls -lh out/Telegram
+          file "$BIN"
+          ls -lh "$BIN"
 
       - name: Upload artifact.
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
-          path: out/Telegram
+          path: out/Release/Telegram
