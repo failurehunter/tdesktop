@@ -323,7 +323,7 @@ void ShareProxy(
 		proxy.password = fields.value(u"secret"_q);
 	}
 	return proxy;
-};
+}
 
 [[nodiscard]] ProxyData ProxyDataFromLocalUrl(const QString &local) {
 	const auto protocol = u"tg://"_q;
@@ -2355,6 +2355,15 @@ void ProxiesBoxController::setClientHello(
 	_account->mtp().restart();
 	_settings.connectionTypeChangesNotify();
 	saveDelayed();
+}
+
+void ProxiesBoxController::saveDelayed() {
+	Core::App().proxyRotationSettingsChanged();
+	_saveTimer.callOnce(kSaveSettingsDelayedTimeout);
+}
+
+auto ProxiesBoxController::views() const -> rpl::producer<ItemView> {
+	return _views.events();
 }
 
 rpl::producer<bool> ProxiesBoxController::listShareableChanges() const {
