@@ -248,6 +248,7 @@ void ProxyRotationManager::startNextCheck() {
 			settings.tryIPv6(),
 			entry.v4,
 			entry.v6,
+			settings.clientHello(),
 			[=](MTP::details::AbstractConnection *raw, int ping) {
 				checkDone(proxy, raw, ping);
 			},
