@@ -2357,26 +2357,6 @@ void ProxiesBoxController::setClientHello(
 	saveDelayed();
 }
 
-void ProxiesBoxController::setClientHello(
-		MTP::ProxyData::ClientHello value) {
-	if (Core::App().settings().proxy().clientHello() == value) {
-		return;
-	}
-	Core::App().settings().proxy().setClientHello(value);
-	_account->mtp().restart();
-	_settings.connectionTypeChangesNotify();
-	saveDelayed();
-}
-
-void ProxiesBoxController::saveDelayed() {
-	Core::App().proxyRotationSettingsChanged();
-	_saveTimer.callOnce(kSaveSettingsDelayedTimeout);
-}
-
-auto ProxiesBoxController::views() const -> rpl::producer<ItemView> {
-	return _views.events();
-}
-
 rpl::producer<bool> ProxiesBoxController::listShareableChanges() const {
 	return _views.events_starting_with(ItemView()) | rpl::map([=] {
 		for (const auto &item : _list) {
