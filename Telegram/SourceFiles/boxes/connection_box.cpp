@@ -1912,7 +1912,6 @@ void ProxiesBoxController::ShowApplyConfirmation(
 					Core::App().settings().proxy().tryIPv6(),
 					state->v4,
 					state->v6,
-					Core::App().settings().proxy().clientHello(),
 					[=](Connection *raw, int ping) {
 						if (!weak || state->finished) {
 							return;
@@ -1939,7 +1938,8 @@ void ProxiesBoxController::ShowApplyConfirmation(
 							state->finished = true;
 							setUnavailable();
 						}
-					});
+					},
+					Core::App().settings().proxy().clientHello());
 				if (!MTP::HasProxyCheckers(state->v4, state->v6)) {
 					state->finished = true;
 					setUnavailable();
@@ -2025,7 +2025,6 @@ void ProxiesBoxController::refreshChecker(Item &item) {
 		Core::App().settings().proxy().tryIPv6(),
 		item.checker,
 		item.checkerv6,
-		Core::App().settings().proxy().clientHello(),
 		[=](Connection *raw, int pingTime) {
 			const auto item = ranges::find(
 				_list,
@@ -2056,7 +2055,8 @@ void ProxiesBoxController::refreshChecker(Item &item) {
 				item->state = ItemState::Unavailable;
 				updateView(*item);
 			}
-		});
+		},
+		Core::App().settings().proxy().clientHello());
 	if (!MTP::HasProxyCheckers(item.checker, item.checkerv6)) {
 		item.state = ItemState::Unavailable;
 	}
