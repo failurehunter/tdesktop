@@ -252,7 +252,7 @@ void ProxyRotationManager::startNextCheck() {
 				checkDone(proxy, raw, ping);
 			},
 			[=](MTP::details::AbstractConnection *raw) {
-				CHECKFAILED_DONE
+				checkFailed(proxy, raw);
 			},
 			settings.clientHello());
 		break;
