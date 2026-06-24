@@ -1130,7 +1130,7 @@ void ProxiesBox::setupContent() {
 			ProxyData::Settings::Enabled,
 			tr::lng_proxy_use_custom(tr::now)),
 		st::proxyUsePadding);
-	inner->add(object_ptr<Ui::Label>(inner, tr::lng_settings_tls_backend(tr::now), st::proxyEditTitle), st::proxyEditTitlePadding);
+	inner->add(object_ptr<Ui::FlatLabel>(inner, tr::lng_settings_tls_backend(tr::now), st::proxyEditTitle), st::proxyEditTitlePadding);
 	_clientHello = std::make_shared<Ui::RadioenumGroup<MTP::ProxyData::ClientHello>>(
 		_settings.clientHello());
 	inner->add(
