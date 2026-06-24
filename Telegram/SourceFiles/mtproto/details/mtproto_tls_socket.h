@@ -60,8 +60,8 @@ private:
 	[[nodiscard]] bool requiredHelloPartReady() const;
 	void readHello();
 	void checkHelloParts12(int parts1Size);
-	void checkHelloParts34(int parts123Size);
 	void checkHelloDigest();
+	[[nodiscard]] int SkipTlsRecords(bytes::const_span data) const;
 	void readData();
 	[[nodiscard]] bool checkNextPacket();
 	void shiftIncomingBy(int amount);

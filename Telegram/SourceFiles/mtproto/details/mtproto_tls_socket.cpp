@@ -1101,11 +1101,6 @@ void TlsSocket::checkHelloParts12(int parts1Size) {
 	const auto data = bytes::make_span(_incoming).subspan(
 		kHelloDigestLength,
 		parts1Size);
-	const auto part2Size = ReadPartLength(data, parts1Size - kLengthSize);
-	const auto parts123Size = parts1Size
-		+ part2Size
-		+ kServerHelloPart3.size()
-		+ kLengthSize;
 	if (_serverHelloLength == parts1Size) {
 		const auto part1Offset = parts1Size
 			- kLengthSize
@@ -1115,37 +1110,30 @@ void TlsSocket::checkHelloParts12(int parts1Size) {
 			handleError();
 			return;
 		}
-		_serverHelloLength = parts123Size;
-		if (!requiredHelloPartReady()) {
-			readHello();
-			return;
-		}
-	}
-	checkHelloParts34(parts123Size);
-}
-
-void TlsSocket::checkHelloParts34(int parts123Size) {
-	const auto data = bytes::make_span(_incoming).subspan(
-		kHelloDigestLength,
-		parts123Size);
-	const auto part4Size = ReadPartLength(data, parts123Size - kLengthSize);
-	const auto full = parts123Size + part4Size;
-	if (_serverHelloLength == parts123Size) {
-		const auto part3Offset = parts123Size
-			- kLengthSize
-			- kServerHelloPart3.size();
-		if (!CheckPart(data.subspan(part3Offset), kServerHelloPart3)) {
-			logError(888, "Bad Server Hello part.");
-			handleError();
-			return;
-		}
-		_serverHelloLength = full;
+		// Skip past ServerHello record, then walk through remaining
+		// TLS records (CCS, AppData, ticket mimics) to find total length.
+		const auto afterHello = data.subspan(parts1Size);
+		const auto remaining = SkipTlsRecords(afterHello);
+		_serverHelloLength = parts1Size + remaining;
 		if (!requiredHelloPartReady()) {
 			readHello();
 			return;
 		}
 	}
 	checkHelloDigest();
+}
+
+int TlsSocket::SkipTlsRecords(bytes::const_span data) const {
+	auto offset = int(0);
+	while (offset + 5 <= data.size()) {
+		const auto recordLen = ReadPartLength(data, offset + 3);
+		const auto totalLen = 5 + recordLen;
+		if (offset + totalLen > data.size()) {
+			break;
+		}
+		offset += totalLen;
+	}
+	return offset;
 }
 
 void TlsSocket::checkHelloDigest() {
@@ -1167,8 +1155,10 @@ void TlsSocket::checkHelloDigest() {
 		handleError();
 		return;
 	}
-	// Shift past ServerHello only; CCS + app_data + tickets remain in _incoming
-	// for parseNewSessionTickets() to process.
+	// Parse NewSessionTicket mimics before shifting them out.
+	// Tickets live between ServerHello end and real MTProto data.
+	parseNewSessionTickets();
+	// Shift past the entire TLS response (ServerHello + CCS + app_data + tickets).
 	shiftIncomingBy(kHelloDigestLength + _serverHelloLength);
 	if (!_incoming.isEmpty()) {
 		InvokeQueued(this, [=] {
@@ -1178,7 +1168,6 @@ void TlsSocket::checkHelloDigest() {
 		});
 	}
 	_incomingGoodDataOffset = _incomingGoodDataLimit = 0;
-	parseNewSessionTickets();
 	_state = State::Connected;
 	_connected.fire({});
 }
