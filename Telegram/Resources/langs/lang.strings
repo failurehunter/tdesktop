@@ -1265,6 +1265,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_proxy_use_custom" = "Use custom proxy";
 "lng_client_hello_default" = "Default";
 "lng_client_hello_boringssl" = "BoringSSL";
+"lng_settings_tls_backend" = "TLS Backend";
 "lng_proxy_use_for_calls" = "Use proxy for calls";
 "lng_proxy_auto_switch" = "Auto-switch proxies";
 "lng_proxy_auto_switch_about" = "You can choose how quickly the app should auto-connect to the nearest active proxy if the current one stops working.";
