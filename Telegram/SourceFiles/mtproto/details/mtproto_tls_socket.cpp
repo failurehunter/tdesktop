@@ -1093,14 +1093,16 @@ void TlsSocket::readHello() {
 			return;
 		}
 		_incoming.append(_socket.readAll());
-		// Re-scan trailing records after each read to detect partial arrivals.
-		const auto fullSpan = bytes::make_detached_span(_incoming);
-		const auto afterHello = fullSpan.subspan(kHelloDigestLength + parts1Size);
-		_serverHelloLength = parts1Size + SkipTlsRecords(afterHello);
 	}
-	if (_serverHelloLength > parts1Size) {
-		checkHelloParts12(parts1Size);
+	// All needed bytes are present — compute full length including tickets.
+	const auto fullSpan = bytes::make_span(_incoming);
+	const auto afterHello = fullSpan.subspan(kHelloDigestLength + parts1Size);
+	_serverHelloLength = parts1Size + SkipTlsRecords(afterHello);
+	// If tickets haven't fully arrived yet — wait for more.
+	if (!requiredHelloPartReady()) {
+		return;
 	}
+	checkHelloParts12(parts1Size);
 }
 
 void TlsSocket::checkHelloParts12(int parts1Size) {
