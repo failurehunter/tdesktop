@@ -154,9 +154,11 @@ jobs:
             -v $PWD:/usr/src/tdesktop \
             -v ${{ runner.temp }}/.tdesktop-cache:/var/cache/ccache \
             -e CONFIG=Release \
-            -e CCACHE_SLOPPINESS=pch_defines,time_macros \
+            -e CCACHE_BASEDIR=/usr/src/tdesktop \
+            -e CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_ctime,include_file_mtime \
             -e CCACHE_MAXSIZE=5G \
             -e CCACHE_COMPRESS=1 \
+            -e CCACHE_CONFIGPATH=/dev/null \
             ${{ needs.build-image.outputs.image_tag }} \
             env -u CCACHE_DISABLE /usr/src/tdesktop/Telegram/build/docker/centos_env/build.sh \
             -D CMAKE_CONFIGURATION_TYPES=Release \
