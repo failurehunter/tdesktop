@@ -1093,32 +1093,27 @@ void TlsSocket::readHello() {
 			return;
 		}
 		_incoming.append(_socket.readAll());
+		// Re-scan trailing records after each read to detect partial arrivals.
+		const auto fullSpan = bytes::make_detached_span(_incoming);
+		const auto afterHello = fullSpan.subspan(kHelloDigestLength + parts1Size);
+		_serverHelloLength = parts1Size + SkipTlsRecords(afterHello);
 	}
-	checkHelloParts12(parts1Size);
+	if (_serverHelloLength > parts1Size) {
+		checkHelloParts12(parts1Size);
+	}
 }
 
 void TlsSocket::checkHelloParts12(int parts1Size) {
 	const auto data = bytes::make_span(_incoming).subspan(
 		kHelloDigestLength,
 		parts1Size);
-	if (_serverHelloLength == parts1Size) {
-		const auto part1Offset = parts1Size
-			- kLengthSize
-			- kServerHelloPart1.size();
-		if (!CheckPart(data.subspan(part1Offset), kServerHelloPart1)) {
-			logError(888, "Bad Server Hello part1.");
-			handleError();
-			return;
-		}
-		// Skip past ServerHello record, then walk through remaining
-		// TLS records (CCS, AppData, ticket mimics) to find total length.
-		const auto afterHello = data.subspan(parts1Size);
-		const auto remaining = SkipTlsRecords(afterHello);
-		_serverHelloLength = parts1Size + remaining;
-		if (!requiredHelloPartReady()) {
-			readHello();
-			return;
-		}
+	const auto part1Offset = parts1Size
+		- kLengthSize
+		- kServerHelloPart1.size();
+	if (!CheckPart(data.subspan(part1Offset), kServerHelloPart1)) {
+		logError(888, "Bad Server Hello part1.");
+		handleError();
+		return;
 	}
 	checkHelloDigest();
 }
