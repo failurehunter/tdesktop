@@ -1095,21 +1095,25 @@ void TlsSocket::readHello() {
 		_incoming.append(_socket.readAll());
 	}
 	// All needed bytes are present — compute full length including tickets.
+	// ServerHello record is 5 bytes header + variable body. Read body length.
+	const auto helloBodyLen = ReadPartLength(_incoming, kHelloDigestLength + 3);
+	const auto serverHelloRecordSize = 5 + helloBodyLen;
 	const auto fullSpan = bytes::make_span(_incoming);
-	const auto afterHello = fullSpan.subspan(kHelloDigestLength + parts1Size);
-	_serverHelloLength = parts1Size + SkipTlsRecords(afterHello);
+	const auto afterHello = fullSpan.subspan(kHelloDigestLength + serverHelloRecordSize);
+	_serverHelloLength = serverHelloRecordSize + SkipTlsRecords(afterHello);
 	// If tickets haven't fully arrived yet — wait for more.
 	if (!requiredHelloPartReady()) {
 		return;
 	}
-	checkHelloParts12(parts1Size);
+	checkHelloParts12(serverHelloRecordSize);
 }
 
-void TlsSocket::checkHelloParts12(int parts1Size) {
+void TlsSocket::checkHelloParts12(int serverHelloRecordSize) {
+	const auto headerSize = kServerHelloPart1.size() + kLengthSize;
 	const auto data = bytes::make_span(_incoming).subspan(
 		kHelloDigestLength,
-		parts1Size);
-	const auto part1Offset = parts1Size
+		headerSize);
+	const auto part1Offset = headerSize
 		- kLengthSize
 		- kServerHelloPart1.size();
 	if (!CheckPart(data.subspan(part1Offset), kServerHelloPart1)) {
@@ -1120,9 +1124,9 @@ void TlsSocket::checkHelloParts12(int parts1Size) {
 	// Walk through remaining TLS records (CCS, AppData, ticket mimics)
 	// to find total length of the server hello response.
 	const auto afterHello = bytes::make_span(_incoming).subspan(
-		kHelloDigestLength + parts1Size);
+		kHelloDigestLength + serverHelloRecordSize);
 	const auto remaining = SkipTlsRecords(afterHello);
-	_serverHelloLength = parts1Size + remaining;
+	_serverHelloLength = serverHelloRecordSize + remaining;
 	if (!requiredHelloPartReady()) {
 		readHello();
 		return;
