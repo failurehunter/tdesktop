@@ -1115,6 +1115,16 @@ void TlsSocket::checkHelloParts12(int parts1Size) {
 		handleError();
 		return;
 	}
+	// Walk through remaining TLS records (CCS, AppData, ticket mimics)
+	// to find total length of the server hello response.
+	const auto afterHello = bytes::make_span(_incoming).subspan(
+		kHelloDigestLength + parts1Size);
+	const auto remaining = SkipTlsRecords(afterHello);
+	_serverHelloLength = parts1Size + remaining;
+	if (!requiredHelloPartReady()) {
+		readHello();
+		return;
+	}
 	checkHelloDigest();
 }
 
