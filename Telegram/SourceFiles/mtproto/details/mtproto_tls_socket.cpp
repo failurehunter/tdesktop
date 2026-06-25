@@ -1121,14 +1121,7 @@ void TlsSocket::checkHelloParts12() {
 		handleError();
 		return;
 	}
-	// Re-scan from beginning to get final length including any new records.
-	const auto fullSpan = bytes::make_span(_incoming);
-	const auto afterHello = fullSpan.subspan(kHelloDigestLength);
-	_serverHelloLength = SkipTlsRecords(afterHello);
-	if (!requiredHelloPartReady()) {
-		readHello();
-		return;
-	}
+	// _serverHelloLength already computed correctly in readHello().
 	checkHelloDigest();
 }
 
