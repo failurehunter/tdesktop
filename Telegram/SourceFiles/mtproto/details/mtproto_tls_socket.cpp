@@ -1095,20 +1095,20 @@ void TlsSocket::readHello() {
 		_incoming.append(_socket.readAll());
 	}
 	// All needed bytes are present — compute full length including tickets.
-	// ServerHello record is 5 bytes header + variable body. Read body length.
-	const auto helloBodyLen = ReadPartLength(_incoming, kHelloDigestLength + 3);
-	const auto serverHelloRecordSize = 5 + helloBodyLen;
+	// Start scanning from the beginning of the server response (after digest).
+	// SkipTlsRecords will walk through ServerHello, CCS, AppData, tickets.
 	const auto fullSpan = bytes::make_span(_incoming);
-	const auto afterHello = fullSpan.subspan(kHelloDigestLength + serverHelloRecordSize);
-	_serverHelloLength = serverHelloRecordSize + SkipTlsRecords(afterHello);
+	const auto afterHello = fullSpan.subspan(kHelloDigestLength);
+	_serverHelloLength = SkipTlsRecords(afterHello);
 	// If tickets haven't fully arrived yet — wait for more.
 	if (!requiredHelloPartReady()) {
 		return;
 	}
-	checkHelloParts12(serverHelloRecordSize);
+	checkHelloParts12();
 }
 
-void TlsSocket::checkHelloParts12(int serverHelloRecordSize) {
+void TlsSocket::checkHelloParts12() {
+	// Validate ServerHello header (first 5 bytes after digest).
 	const auto headerSize = kServerHelloPart1.size() + kLengthSize;
 	const auto data = bytes::make_span(_incoming).subspan(
 		kHelloDigestLength,
@@ -1121,12 +1121,10 @@ void TlsSocket::checkHelloParts12(int serverHelloRecordSize) {
 		handleError();
 		return;
 	}
-	// Walk through remaining TLS records (CCS, AppData, ticket mimics)
-	// to find total length of the server hello response.
-	const auto afterHello = bytes::make_span(_incoming).subspan(
-		kHelloDigestLength + serverHelloRecordSize);
-	const auto remaining = SkipTlsRecords(afterHello);
-	_serverHelloLength = serverHelloRecordSize + remaining;
+	// Re-scan from beginning to get final length including any new records.
+	const auto fullSpan = bytes::make_span(_incoming);
+	const auto afterHello = fullSpan.subspan(kHelloDigestLength);
+	_serverHelloLength = SkipTlsRecords(afterHello);
 	if (!requiredHelloPartReady()) {
 		readHello();
 		return;

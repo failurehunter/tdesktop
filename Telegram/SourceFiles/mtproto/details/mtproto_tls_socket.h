@@ -59,7 +59,7 @@ private:
 	void handleError(int errorCode = 0);
 	[[nodiscard]] bool requiredHelloPartReady() const;
 	void readHello();
-	void checkHelloParts12(int parts1Size);
+	void checkHelloParts12();
 	void checkHelloDigest();
 	[[nodiscard]] int SkipTlsRecords(bytes::const_span data) const;
 	void readData();
