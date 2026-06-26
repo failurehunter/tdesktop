@@ -33,113 +33,7 @@ constexpr auto kClientPartSize = 2878;
 const auto kClientPrefix = qstr("\x14\x03\x03\x00\x01\x01");
 const auto kClientHeader = qstr("\x17\x03\x03");
 
-constexpr auto kPskKeyExchangeModePskKe = 0x01;
-constexpr auto kPskExtensionType = 0x0029;
-constexpr auto kPskKeyExchangeModesType = 0x002d;
 constexpr auto kSha256Size = 32;
-
-// Precomputed SHA-256("") for PSK binder computation
-static const bytes::vector kEmptySha256Hash = [] {
-    bytes::vector h(kSha256Size);
-    SHA256(nullptr, 0, reinterpret_cast<uint8_t*>(h.data()));
-    return h;
-}();
-
-// HKDF-Extract(salt, IKM) = HMAC-SHA256(salt, IKM)
-[[nodiscard]] bytes::vector HkdfExtractSha256(
-        bytes::const_span salt,
-        bytes::const_span ikm) {
-    auto result = bytes::vector(kSha256Size);
-    unsigned int len = kSha256Size;
-    HMAC(EVP_sha256(),
-        reinterpret_cast<const unsigned char*>(salt.data()),
-        salt.size(),
-        reinterpret_cast<const unsigned char*>(ikm.data()),
-        ikm.size(),
-        reinterpret_cast<unsigned char*>(result.data()),
-        &len);
-    return result;
-}
-
-// HKDF-Expand(PRK, info, length)
-[[nodiscard]] bytes::vector HkdfExpandSha256(
-        bytes::const_span prk,
-        bytes::const_span info,
-        size_t length) {
-    auto result = bytes::vector(length);
-    unsigned int len = 0;
-    auto t = QByteArray();
-    for (uint8_t i = 1; result.size() > t.size(); ++i) {
-        len = kSha256Size;
-        auto hmacKey = QByteArray(
-            reinterpret_cast<const char*>(prk.data()), prk.size());
-        auto msg = t;
-        msg.append(reinterpret_cast<const char*>(info.data()), info.size());
-        msg.append(static_cast<char>(i));
-        auto block = bytes::vector(kSha256Size);
-        HMAC(EVP_sha256(),
-            reinterpret_cast<const unsigned char*>(hmacKey.data()), hmacKey.size(),
-            reinterpret_cast<const unsigned char*>(msg.data()), msg.size(),
-            reinterpret_cast<unsigned char*>(block.data()),
-            &len);
-        t.append(reinterpret_cast<const char*>(block.data()), kSha256Size);
-    }
-    std::memcpy(result.data(), t.constData(), length);
-    return result;
-}
-
-// HKDF-Expand-Label(Secret, Label, Context, Length)
-[[nodiscard]] bytes::vector HkdfExpandLabel(
-        bytes::const_span secret,
-        const char *label,
-        bytes::const_span context,
-        size_t length) {
-    const QByteArray prefix = "tls13 ";
-    const auto labelLen = strlen(label);
-    const uint8_t labelPrefixLen = prefix.size() + labelLen;
-    const uint8_t contextLen = static_cast<uint8_t>(context.size());
-    QByteArray info;
-    info.append(static_cast<char>((length >> 8) & 0xFF));
-    info.append(static_cast<char>(length & 0xFF));
-    info.append(static_cast<char>(labelPrefixLen));
-    info.append(prefix.constData(), prefix.size());
-    info.append(label, labelLen);
-    info.append(static_cast<char>(contextLen));
-    if (context.size() > 0) {
-        info.append(reinterpret_cast<const char*>(context.data()), context.size());
-    }
-    return HkdfExpandSha256(secret,
-        bytes::make_span(info.data(), info.size()),
-        length);
-}
-
-// Compute PSK binder (RFC 8446 4.2.11.2)
-[[nodiscard]] bytes::vector ComputePskBinder(
-        bytes::const_span pskSecret,
-        bytes::const_span truncatedCH) {
-    const auto binderContext = bytes::make_span(
-        reinterpret_cast<const bytes::type*>(kEmptySha256Hash.data()),
-        kSha256Size);
-    auto earlySecret = HkdfExtractSha256(binderContext, pskSecret);
-    auto binderKey = HkdfExpandLabel(
-        bytes::make_span(earlySecret),
-        "res binder",
-        binderContext,
-        kSha256Size);
-    uint8_t transcriptHash[kSha256Size];
-    SHA256(reinterpret_cast<const unsigned char*>(truncatedCH.data()),
-        truncatedCH.size(), transcriptHash);
-    auto binder = bytes::vector(kSha256Size);
-    unsigned int len = kSha256Size;
-    HMAC(EVP_sha256(),
-        reinterpret_cast<const unsigned char*>(binderKey.data()),
-        binderKey.size(),
-        transcriptHash,
-        kSha256Size,
-        reinterpret_cast<unsigned char*>(binder.data()),
-        &len);
-    return binder;
-}
 
 
 using BigNum = openssl::BigNum;
@@ -692,7 +586,7 @@ ClientHello Generator::take() {
 [[nodiscard]] ClientHello PrepareBoringSSLClientHello(
 		bytes::const_span domain,
 		bytes::const_span key,
-		const std::optional<TlsSocket::PskData> &psk) {
+		 {
 	// Mimics Chrome 149 / BoringSSL ClientHello (mtproxy_tls2.py build_client_hello)
 	// Returns { record (full TLS record), digest (32-byte HMAC for server hello verification) }
 
@@ -837,51 +731,11 @@ ClientHello Generator::take() {
 	perm.append(echExt);                                                 // ECH GREASE
 	perm.append(ext(uint16(uint8_t(gv4[0]) << 8 | uint8_t(gv4[1])), QByteArray("\x00\x01\x00", 3))); // GREASE ext2
 
-// === PSK extension (if we have a ticket from previous session) ===
-	QByteArray pskExt;
-	if (psk.has_value()) {
-		const auto &pskData = psk.value();
-		const auto ticketBytes = QByteArray(
-			reinterpret_cast<const char*>(pskData.ticket.data()),
-			pskData.ticket.size());
-		const auto ageMs = uint32_t(
-			(base::unixtime::http_now() - pskData.timestamp) * 1000
-			+ pskData.ticketAgeAdd);
-		const auto obfuscatedAge = qToBigEndian(ageMs);
-	
-		QByteArray pskIdentity;
-		pskIdentity.append(with16(ticketBytes));
-		pskIdentity.append(reinterpret_cast<const char*>(&obfuscatedAge), 4);
-	
-		QByteArray identities;
-		identities.append(pskIdentity);
-	
-		// Placeholder binder: 1 byte length (32) + 32 zero bytes
-		QByteArray binderPlaceholder;
-		binderPlaceholder.append(static_cast<char>(32));
-		binderPlaceholder.append(QByteArray(32, char(0)));
-	
-		QByteArray binders;
-		binders.append(with16(binderPlaceholder));
-	
-		QByteArray pskContents;
-		pskContents.append(with16(identities));
-		pskContents.append(with16(binders));
-	
-		pskExt = ext(kPskExtensionType, pskContents);
-	}
-
-
-	std::random_device rd;
-	std::mt19937 gen(rd());
 	std::shuffle(perm.begin(), perm.end(), gen);
 
 	QByteArray extBody;
 	for (const auto &e : perm) {
 		extBody.append(e);
-	}
-	if (psk.has_value()) {
-		extBody.append(pskExt);
 	}
 	const auto extensions = with16(extBody);
 
@@ -919,48 +773,6 @@ ClientHello Generator::take() {
 	auto digestSpan = recordSpan.subspan(11, kHelloDigestLength);
 	auto keySpan = bytes::make_span(key);
 	bytes::copy(digestSpan, openssl::HmacSha256(keySpan, recordSpan));
-
-	// === PSK binder computation (RFC 8446 4.2.11.2) ===
-	if (psk.has_value()) {
-		const auto recData = reinterpret_cast<uint8_t*>(record.data());
-		const auto recLen = record.size();
-		constexpr uint16_t kPskExtType = 0x0029;
-		int psk_type_pos = -1;
-		const int kExtensionsStart = 114;
-		int pos = kExtensionsStart;
-		while (pos + 4 <= recLen) {
-			const uint16_t ext_type = (recData[pos] << 8) | recData[pos + 1];
-			const uint16_t ext_len = (recData[pos + 2] << 8) | recData[pos + 3];
-			if (ext_type == kPskExtType) {
-				psk_type_pos = pos;
-				break;
-			}
-			pos += 4 + ext_len;
-		}
-		if (psk_type_pos >= 0) {
-			const auto ticketLen = psk.value().ticket.size();
-			const int binder_offset = psk_type_pos + 9 + ticketLen + 6;
-			const uint8_t binder_len = recData[psk_type_pos + 8 + ticketLen + 6];
-			const int ch_offset = 5;
-			const int ch_hs_len = 1 + 3 +
-				((recData[6] << 16) | (recData[7] << 8) | recData[8]);
-			const int ch_len = ch_offset + ch_hs_len;
-			QByteArray truncatedCH = record.mid(ch_offset, ch_len);
-			auto truncData = reinterpret_cast<uint8_t*>(truncatedCH.data());
-			const int binder_in_ch = binder_offset - ch_offset;
-			std::memset(truncData + binder_in_ch, 0, binder_len);
-			const auto &pskTicket = psk.value().ticket;
-			auto pskSecret = bytes::make_span(
-				reinterpret_cast<const bytes::type*>(pskTicket.data()),
-				pskTicket.size());
-			const auto truncatedSpan = bytes::make_span(
-				reinterpret_cast<const bytes::type*>(truncatedCH.constData()),
-				truncatedCH.size());
-			auto binder = ComputePskBinder(pskSecret, truncatedSpan);
-			std::memcpy(recData + binder_offset, binder.data(), binder_len);
-		} else {
-		}
-	}
 
 	// XOR timestamp into digest[28..32] (last 4 bytes of random field = record bytes 39..43)
 	// In the HMAC output (digestSpan), offset 28..32
@@ -1053,7 +865,7 @@ void TlsSocket::plainConnected() {
 
 	static const auto kClientHelloRules = PrepareClientHelloRules();
 	const auto hello = (_clientHello == MTP::ProxyData::ClientHello::BoringSSL)
-		? PrepareBoringSSLClientHello(domainFromSecret(), keyFromSecret(), _psk)
+		? PrepareBoringSSLClientHello(domainFromSecret(), keyFromSecret())
 		: PrepareClientHello(kClientHelloRules, domainFromSecret(), keyFromSecret());
 	if (hello.data.isEmpty()) {
 		logError(888, "Could not generate Client Hello.");
@@ -1160,113 +972,6 @@ void TlsSocket::checkHelloDigest() {
 		handleError();
 		return;
 	}
-	// Parse NewSessionTicket mimics before shifting them out.
-	// Tickets live between ServerHello end and real MTProto data.
-	parseNewSessionTickets();
-	// Shift past the entire TLS response (ServerHello + CCS + app_data + tickets).
-	shiftIncomingBy(kHelloDigestLength + _serverHelloLength);
-	if (!_incoming.isEmpty()) {
-		InvokeQueued(this, [=] {
-			if (!checkNextPacket()) {
-				handleError();
-			}
-		});
-	}
-	_incomingGoodDataOffset = _incomingGoodDataLimit = 0;
-	_state = State::Connected;
-	_connected.fire({});
-}
-
-void TlsSocket::readData() {
-	if (!isConnected()) {
-		return;
-	}
-	_incoming.append(_socket.readAll());
-	if (!checkNextPacket()) {
-		handleError();
-	} else if (hasBytesAvailable()) {
-		_readyRead.fire({});
-	}
-}
-
-void TlsSocket::parseNewSessionTickets() {
-    auto data = bytes::make_span(_incoming);
-    auto offset = size_t(0);
-    while (offset + 5 <= data.size()) {
-        uint8_t record_type = static_cast<uint8_t>(data[offset]);
-        uint16_t record_len = (uint16_t(static_cast<uint8_t>(data[offset+3])) << 8)
-            | uint16_t(static_cast<uint8_t>(data[offset+4]));
-        if (offset + 5 + record_len > data.size()) {
-            break;
-        }
-        const auto record_data = data.subspan(offset + 5, record_len);
-        bool parsed = false;
-        if (record_type == 0x16 && record_data.size() >= 4) {
-            uint8_t hs_type = static_cast<uint8_t>(record_data[0]);
-            uint32_t hs_len = (uint32_t(static_cast<uint8_t>(record_data[1])) << 16)
-                | (uint32_t(static_cast<uint8_t>(record_data[2])) << 8)
-                | uint32_t(static_cast<uint8_t>(record_data[3]));
-            if (hs_type == 0x04 && record_data.size() >= 4 + hs_len) {
-                parsed = parseNewSessionTicketData(
-                    record_data.subspan(4, hs_len));
-            }
-        } else if (record_type == 0x17 && record_data.size() >= 4) {
-            uint8_t hs_type = static_cast<uint8_t>(record_data[0]);
-            if (hs_type == 0x04) {
-                uint32_t hs_len = (uint32_t(static_cast<uint8_t>(record_data[1])) << 16)
-                    | (uint32_t(static_cast<uint8_t>(record_data[2])) << 8)
-                    | uint32_t(static_cast<uint8_t>(record_data[3]));
-                if (record_data.size() >= 4 + hs_len) {
-                    parsed = parseNewSessionTicketData(
-                        record_data.subspan(4, hs_len));
-                }
-            }
-        }
-        if (parsed) {
-        }
-        offset += 5 + record_len;
-    }
-}
-
-bool TlsSocket::parseNewSessionTicketData(bytes::const_span data) {
-    size_t pos = 0;
-    uint32_t ticket_lifetime = 0, ticket_age_add = 0;
-    uint16_t ticket_len = 0;
-    uint8_t nonce_len = 0;
-    if (pos + 4 > data.size()) return false;
-    auto b0 = static_cast<uint8_t>(data[pos]);
-    auto b1 = static_cast<uint8_t>(data[pos+1]);
-    auto b2 = static_cast<uint8_t>(data[pos+2]);
-    auto b3 = static_cast<uint8_t>(data[pos+3]);
-    ticket_lifetime = (uint32_t(b0) << 24) | (uint32_t(b1) << 16)
-        | (uint32_t(b2) << 8) | uint32_t(b3);
-    pos += 4;
-    if (pos + 4 > data.size()) return false;
-    b0 = static_cast<uint8_t>(data[pos]);
-    b1 = static_cast<uint8_t>(data[pos+1]);
-    b2 = static_cast<uint8_t>(data[pos+2]);
-    b3 = static_cast<uint8_t>(data[pos+3]);
-    ticket_age_add = (uint32_t(b0) << 24) | (uint32_t(b1) << 16)
-        | (uint32_t(b2) << 8) | uint32_t(b3);
-    pos += 4;
-    if (pos + 1 > data.size()) return false;
-    nonce_len = static_cast<uint8_t>(data[pos]);
-    pos += 1;
-    if (pos + nonce_len > data.size()) return false;
-    pos += nonce_len;
-    if (pos + 2 > data.size()) return false;
-    ticket_len = (uint16_t(static_cast<uint8_t>(data[pos])) << 8)
-        | uint16_t(static_cast<uint8_t>(data[pos+1]));
-    pos += 2;
-    if (pos + ticket_len > data.size()) return false;
-    PskData psk;
-    psk.ticket = bytes::vector(ticket_len);
-    std::memcpy(psk.ticket.data(), data.data() + pos, ticket_len);
-    psk.ticketAgeAdd = ticket_age_add;
-    psk.timestamp = base::unixtime::http_now();
-    _psk = std::move(psk);
-    return true;
-}
 
 bool TlsSocket::checkNextPacket() {
 	auto offset = 0;

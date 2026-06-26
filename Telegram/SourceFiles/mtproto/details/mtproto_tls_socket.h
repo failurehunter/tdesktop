@@ -14,12 +14,6 @@ namespace MTP::details {
 
 class TlsSocket final : public AbstractSocket {
 public:
-	struct PskData {
-		bytes::vector ticket;
-		uint32 ticketAgeAdd = 0;
-		crl::time timestamp = 0;
-	};
-
 	TlsSocket(
 		not_null<QThread*> thread,
 		const bytes::vector &secret,
@@ -65,8 +59,6 @@ private:
 	void readData();
 	[[nodiscard]] bool checkNextPacket();
 	void shiftIncomingBy(int amount);
-	void parseNewSessionTickets();
-	bool parseNewSessionTicketData(bytes::const_span data);
 
 	const bytes::vector _secret;
 	const MTP::ProxyData::ClientHello _clientHello;
@@ -76,7 +68,6 @@ private:
 	int _incomingGoodDataOffset = 0;
 	int _incomingGoodDataLimit = 0;
 	int16 _serverHelloLength = 0;
-	std::optional<PskData> _psk;
 
 };
 
