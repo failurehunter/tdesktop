@@ -973,6 +973,7 @@ void TlsSocket::checkHelloDigest() {
 		handleError();
 		return;
 	}
+}
 
 	bool TlsSocket::checkNextPacket() {
 	auto offset = 0;
