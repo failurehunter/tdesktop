@@ -814,27 +814,30 @@ ClientHello Generator::take() {
 		echExt = ext(0xfe0d, echPayload);
 	}
 
-	// Permutable extensions (shuffled) — stored as full encoded ext (type+len+payload)
+		// Permutable extensions (shuffled) — all 16 including SNI.
+	// JA4 spec excludes SNI/ALPN/GREASE from ext count, so 16 here = 16 in JA4.
+	// pre_shared_key (if present) is always last, outside shuffle.
 	QVector<QByteArray> perm;
-	perm.append(ext(0x0017, QByteArray()));                              // extended_master_secret
+	perm.append(sniExt);                                                  // server_name
+	perm.append(ext(uint16(uint8_t(gv2[0]) << 8 | uint8_t(gv2[1])), QByteArray("\x00\x00", 2)));  // GREASE ext1
 	perm.append(ext(0xff01, QByteArray(1, char(0))));                    // renegotiation_info
+	perm.append(ext(0x0017, QByteArray()));                              // extended_master_secret
+	perm.append(ext(0x001b, QByteArray("\x02\x00\x02", 3)));            // compress_certificate
+	perm.append(sgExt);                                                  // supported_groups
 	perm.append(ext(0x000b, QByteArray("\x01\x00", 2)));                // ec_point_formats
+	perm.append(ext(0x000d, sigAlgsPayload));                            // signature_algorithms
+	perm.append(ext(0x0012, QByteArray()));                              // signed_certificate_timestamp
 	perm.append(ext(0x0023, QByteArray()));                              // session_ticket
 	perm.append(ext(0x0005, QByteArray("\x01\x00\x00\x00\x00", 5)));   // status_request
-	perm.append(ext(0x000d, sigAlgsPayload));                            // signature_algorithms
-	perm.append(ext(0x0012, QByteArray()));                              // signed_cert_timestamp
-	perm.append(ext(0x002d, QByteArray("\x01\x01", 2)));                // psk_key_exchange_modes
-	perm.append(ext(0x001b, QByteArray("\x02\x00\x02", 3)));            // compress_certificate
-	perm.append(ext(0x44cd, QByteArray("\x00\x03\x02h2", 5)));          // application_settings
 	perm.append(svExt);                                                  // supported_versions
-	perm.append(sgExt);                                                  // supported_groups
+	perm.append(ext(0x002d, QByteArray("\x01\x01", 2)));                // psk_key_exchange_modes
 	perm.append(ksExt);                                                  // key_share
 	perm.append(alpnExt);                                                // ALPN
-	perm.append(ext(uint16(uint8_t(gv2[0]) << 8 | uint8_t(gv2[1])), QByteArray("\x00\x00", 2)));  // GREASE ext1
+	perm.append(ext(0x44cd, QByteArray("\x00\x03\x02h2", 5)));          // application_settings
+	perm.append(echExt);                                                 // ECH GREASE
 	perm.append(ext(uint16(uint8_t(gv4[0]) << 8 | uint8_t(gv4[1])), QByteArray("\x00\x01\x00", 3))); // GREASE ext2
-	perm.append(echExt);                                                 // GREASE ECH
 
-	// === PSK extension (if we have a ticket from previous session) ===
+// === PSK extension (if we have a ticket from previous session) ===
 	QByteArray pskExt;
 	if (psk.has_value()) {
 		const auto &pskData = psk.value();
@@ -873,7 +876,7 @@ ClientHello Generator::take() {
 	std::mt19937 gen(rd());
 	std::shuffle(perm.begin(), perm.end(), gen);
 
-	QByteArray extBody = sniExt;
+	QByteArray extBody;
 	for (const auto &e : perm) {
 		extBody.append(e);
 	}
