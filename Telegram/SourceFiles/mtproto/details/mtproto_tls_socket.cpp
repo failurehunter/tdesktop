@@ -585,8 +585,7 @@ ClientHello Generator::take() {
 
 [[nodiscard]] ClientHello PrepareBoringSSLClientHello(
 		bytes::const_span domain,
-		bytes::const_span key,
-		 {
+		bytes::const_span key) {
 	// Mimics Chrome 149 / BoringSSL ClientHello (mtproxy_tls2.py build_client_hello)
 	// Returns { record (full TLS record), digest (32-byte HMAC for server hello verification) }
 
@@ -731,6 +730,8 @@ ClientHello Generator::take() {
 	perm.append(echExt);                                                 // ECH GREASE
 	perm.append(ext(uint16(uint8_t(gv4[0]) << 8 | uint8_t(gv4[1])), QByteArray("\x00\x01\x00", 3))); // GREASE ext2
 
+	std::random_device rd;
+	std::mt19937 gen(rd());
 	std::shuffle(perm.begin(), perm.end(), gen);
 
 	QByteArray extBody;
