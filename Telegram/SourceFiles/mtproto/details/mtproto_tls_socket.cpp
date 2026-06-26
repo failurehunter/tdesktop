@@ -974,7 +974,7 @@ void TlsSocket::checkHelloDigest() {
 		return;
 	}
 
-bool TlsSocket::checkNextPacket() {
+	bool TlsSocket::checkNextPacket() {
 	auto offset = 0;
 	const auto incoming = bytes::make_span(_incoming);
 	while (!_incomingGoodDataLimit) {
