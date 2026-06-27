@@ -869,7 +869,7 @@ void TlsSocket::plainConnected() {
 		? PrepareBoringSSLClientHello(domainFromSecret(), keyFromSecret())
 		: PrepareClientHello(kClientHelloRules, domainFromSecret(), keyFromSecret());
 	if (hello.data.isEmpty()) {
-		LogError(888, "Could not generate Client Hello.");
+		logError(888, "Could not generate Client Hello.");
 		_state = State::Error;
 		_error.fire({});
 	} else {
@@ -933,7 +933,7 @@ void TlsSocket::checkHelloParts12() {
 		- kLengthSize
 		- kServerHelloPart1.size();
 	if (!CheckPart(data.subspan(part1Offset), kServerHelloPart1)) {
-		LogError(888, "Bad Server Hello part1.");
+		logError(888, "Bad Server Hello part1.");
 		handleError();
 		return;
 	}
@@ -969,7 +969,7 @@ void TlsSocket::checkHelloDigest() {
 	bytes::set_with_const(digest, bytes::type(0));
 	const auto check = openssl::HmacSha256(keyFromSecret(), fulldata);
 	if (bytes::compare(digestCopy, check) != 0) {
-		LogError(888, "Bad Server Hello digest.");
+		logError(888, "Bad Server Hello digest.");
 		handleError();
 		return;
 	}
@@ -1008,7 +1008,7 @@ bool TlsSocket::checkNextPacket() {
 			return true;
 		}
 		if (!CheckPart(incoming.subspan(offset), kServerHeader)) {
-			LogError(888, "Bad packet header.");
+			logError(888, "Bad packet header.");
 			return false;
 		}
 		const auto length = ReadPartLength(
