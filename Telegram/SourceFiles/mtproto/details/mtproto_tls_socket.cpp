@@ -634,7 +634,7 @@ ClientHello Generator::take() {
 
 	// supported_groups: [GREASE, X25519MLKEM768, x25519, secp256r1, secp384r1]
 	const auto sgExt = ext(0x000a, with16(
-		g(3).append("\x11\xec\x00\x1d\x00\x17\x00\x18", 8)));
+			g(3).append("\x11\xec\x00\x1d\x00\x17\x00\x18", 8)));
 
 	// key_share: GREASE(0-len key) + X25519MLKEM768(1216B random) + x25519(32B random)
 	auto x25519Pub = bytes::vector(32);
@@ -707,7 +707,7 @@ ClientHello Generator::take() {
 		echExt = ext(0xfe0d, echPayload);
 	}
 
-		// Permutable extensions (shuffled) — all 16 including SNI.
+	// Permutable extensions (shuffled) — all 16 including SNI.
 	// JA4 spec excludes SNI/ALPN/GREASE from ext count, so 16 here = 16 in JA4.
 	// pre_shared_key (if present) is always last, outside shuffle.
 	QVector<QByteArray> perm;
@@ -811,7 +811,7 @@ TlsSocket::TlsSocket(
 	const bytes::vector &secret,
 	const QNetworkProxy &proxy,
 	bool protocolForFiles,
-		MTP::ProxyData::ClientHello clientHello)
+	MTP::ProxyData::ClientHello clientHello)
 : AbstractSocket(thread)
 , _secret(secret)
 , _clientHello(clientHello) {
@@ -869,7 +869,7 @@ void TlsSocket::plainConnected() {
 		? PrepareBoringSSLClientHello(domainFromSecret(), keyFromSecret())
 		: PrepareClientHello(kClientHelloRules, domainFromSecret(), keyFromSecret());
 	if (hello.data.isEmpty()) {
-		logError(888, "Could not generate Client Hello.");
+		LogError(888, "Could not generate Client Hello.");
 		_state = State::Error;
 		_error.fire({});
 	} else {
@@ -933,7 +933,7 @@ void TlsSocket::checkHelloParts12() {
 		- kLengthSize
 		- kServerHelloPart1.size();
 	if (!CheckPart(data.subspan(part1Offset), kServerHelloPart1)) {
-		logError(888, "Bad Server Hello part1.");
+		LogError(888, "Bad Server Hello part1.");
 		handleError();
 		return;
 	}
@@ -969,13 +969,37 @@ void TlsSocket::checkHelloDigest() {
 	bytes::set_with_const(digest, bytes::type(0));
 	const auto check = openssl::HmacSha256(keyFromSecret(), fulldata);
 	if (bytes::compare(digestCopy, check) != 0) {
-		logError(888, "Bad Server Hello digest.");
+		LogError(888, "Bad Server Hello digest.");
 		handleError();
 		return;
 	}
+	// Shift past the entire TLS response (ServerHello + CCS + app_data + tickets).
+	shiftIncomingBy(kHelloDigestLength + _serverHelloLength);
+	if (!_incoming.isEmpty()) {
+		InvokeQueued(this, [=] {
+			if (!checkNextPacket()) {
+				handleError();
+			}
+		});
+	}
+	_incomingGoodDataOffset = _incomingGoodDataLimit = 0;
+	_state = State::Connected;
+	_connected.fire({});
 }
 
-	bool TlsSocket::checkNextPacket() {
+void TlsSocket::readData() {
+	if (!isConnected()) {
+		return;
+	}
+	_incoming.append(_socket.readAll());
+	if (!checkNextPacket()) {
+		handleError();
+	} else if (hasBytesAvailable()) {
+		_readyRead.fire({});
+	}
+}
+
+bool TlsSocket::checkNextPacket() {
 	auto offset = 0;
 	const auto incoming = bytes::make_span(_incoming);
 	while (!_incomingGoodDataLimit) {
@@ -984,7 +1008,7 @@ void TlsSocket::checkHelloDigest() {
 			return true;
 		}
 		if (!CheckPart(incoming.subspan(offset), kServerHeader)) {
-			logError(888, "Bad packet header.");
+			LogError(888, "Bad packet header.");
 			return false;
 		}
 		const auto length = ReadPartLength(
