@@ -612,10 +612,10 @@ ClientHello Generator::take() {
 	};
 	const auto g = [&](int i) { char c = gv(i); return QByteArray(2, c); };
 
-	// === Cipher Suites (Chrome 149 no-AES-HW order) ===
-	// GREASE + 15 suites: 1303, 1301, 1302, cca9, cca8, c02b, c02f, c02c, c030, c013, c014, 009c, 009d, 002f, 0035
+	// === Cipher Suites (Chrome 149 AES-HW order) ===
+	// GREASE + 15 suites: 1301, 1302, 1303, cca9, cca8, c02b, c02f, c02c, c030, c013, c014, 009c, 009d, 002f, 0035
 	const auto ciphers = g(0).append(
-		"\x13\x01\x13\x03\x13\x02\xcc\xa9\xcc\xa8"
+		"\x13\x01\x13\x02\x13\x03\xcc\xa9\xcc\xa8"
 		"\xc0\x2b\xc0\x2f\xc0\x2c\xc0\x30\xc0\x13\xc0\x14"
 		"\x00\x9c\x00\x9d\x00\x2f\x00\x35", 30);  // 2 + 28 = 30 bytes (15 suites)
 
