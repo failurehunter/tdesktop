@@ -145,6 +145,11 @@ private:
 		const QString &ip,
 		int port,
 		const bytes::vector &protocolSecret);
+	void appendTestConnectionsDeferred(
+		std::vector<std::tuple<DcOptions::Variants::Protocol, QString, int, bytes::vector>> &&queue,
+		crl::time baseDelay);
+	void cancelStaggeredConnect();
+	void staggeredConnectTick();
 
 	// if badTime received - search for ids in sessionData->haveSent and sessionData->wereAcked and sync time/salt, return true if found
 	bool requestsFixTimeSalt(const QVector<MTPlong> &ids, const OuterInfo &info);
@@ -216,6 +221,13 @@ private:
 	base::Timer _pingSender;
 	base::Timer _checkSentRequestsTimer;
 	base::Timer _clearOldContainersTimer;
+	base::Timer _staggeredConnectTimer;
+	crl::time _staggeredConnectNext = 0;
+	std::vector<std::tuple<
+		DcOptions::Variants::Protocol,
+		QString,
+		int,
+		bytes::vector>> _staggeredConnectQueue;
 
 	std::shared_ptr<SessionData> _sessionData;
 	std::unique_ptr<SessionOptions> _options;

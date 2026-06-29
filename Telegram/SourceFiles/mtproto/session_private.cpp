@@ -25,6 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <ksandbox.h>
 #include <zlib.h>
+#include <algorithm>
 
 namespace MTP {
 namespace details {
@@ -45,6 +46,12 @@ constexpr auto kBindKeyAdditionalExpiresTimeout = TimeId(30);
 constexpr auto kKeyOldEnoughForDestroy = 60 * crl::time(1000);
 constexpr auto kSentContainerLives = 600 * crl::time(1000);
 constexpr auto kFastRequestDuration = crl::time(500);
+
+// Delay between starting parallel test connections in a single connectToServer
+// call. A value of 0 keeps the old burst behavior; a small positive value
+// spreads the initial TCP+PQ handshake packets over time so network filters
+// do not see a single connection flood from one source port / IP.
+constexpr auto kStaggeredConnectDelay = crl::time(300);
 
 // If we can't connect for this time we will ask _instance to update config.
 constexpr auto kRequestConfigTimeout = 8 * crl::time(1000);
@@ -171,6 +178,7 @@ SessionPrivate::SessionPrivate(
 , _pingSender(thread, [=] { sendPingByTimer(); })
 , _checkSentRequestsTimer(thread, [=] { checkSentRequests(); })
 , _clearOldContainersTimer(thread, [=] { clearOldContainers(); })
+, _staggeredConnectTimer(thread, [=] { staggeredConnectTick(); })
 , _sessionData(std::move(data)) {
 	Expects(_shiftedDcId != 0);
 
@@ -246,6 +254,40 @@ void SessionPrivate::appendTestConnection(
 			protocolDcId,
 			protocolForFiles);
 	});
+}
+
+void SessionPrivate::appendTestConnectionsDeferred(
+		std::vector<std::tuple<
+			DcOptions::Variants::Protocol,
+			QString,
+			int,
+			bytes::vector>> &&queue,
+		crl::time baseDelay) {
+	_staggeredConnectQueue = std::move(queue);
+	_staggeredConnectNext = 0;
+	if (!_staggeredConnectQueue.empty()) {
+		if (baseDelay > 0) {
+			_staggeredConnectTimer.callOnce(baseDelay);
+		} else {
+			staggeredConnectTick();
+		}
+	}
+}
+
+void SessionPrivate::cancelStaggeredConnect() {
+	_staggeredConnectTimer.cancel();
+	_staggeredConnectQueue.clear();
+	_staggeredConnectNext = 0;
+}
+
+void SessionPrivate::staggeredConnectTick() {
+	if (_staggeredConnectNext < _staggeredConnectQueue.size()) {
+		const auto &[protocol, ip, port, secret] = _staggeredConnectQueue[_staggeredConnectNext++];
+		appendTestConnection(protocol, ip, port, secret);
+		if (_staggeredConnectNext < _staggeredConnectQueue.size()) {
+			_staggeredConnectTimer.callOnce(kStaggeredConnectDelay);
+		}
+	}
 }
 
 int16 SessionPrivate::getProtocolDcId() const {
@@ -333,6 +375,7 @@ void SessionPrivate::clearOldContainers() {
 }
 
 void SessionPrivate::destroyAllConnections() {
+	cancelStaggeredConnect();
 	clearUnboundKeyCreator();
 	_waitForBetterTimer.cancel();
 	_waitForReceivedTimer.cancel();
@@ -1063,6 +1106,11 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 			: !useHttp
 			? Variants::Http
 			: Variants::ProtocolCount;
+		auto endpoints = std::vector<std::tuple<
+			DcOptions::Variants::Protocol,
+			QString,
+			int,
+			bytes::vector>>();
 		for (auto address = 0; address != Variants::AddressTypeCount; ++address) {
 			if (address == skipAddress) {
 				continue;
@@ -1072,7 +1120,7 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 					continue;
 				}
 				for (const auto &endpoint : variants.data[address][protocol]) {
-					appendTestConnection(
+					endpoints.emplace_back(
 						static_cast<Variants::Protocol>(protocol),
 						QString::fromStdString(endpoint.ip),
 						endpoint.port,
@@ -1080,6 +1128,7 @@ void SessionPrivate::connectToServer(bool afterConfig) {
 				}
 			}
 		}
+		appendTestConnectionsDeferred(std::move(endpoints), 0);
 	}
 	if (_testConnections.empty()) {
 		if (_instance->isKeysDestroyer()) {
