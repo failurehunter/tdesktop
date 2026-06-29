@@ -615,7 +615,7 @@ ClientHello Generator::take() {
 	// === Cipher Suites (Chrome 149 no-AES-HW order) ===
 	// GREASE + 15 suites: 1303, 1301, 1302, cca9, cca8, c02b, c02f, c02c, c030, c013, c014, 009c, 009d, 002f, 0035
 	const auto ciphers = g(0).append(
-		"\x13\x03\x13\x01\x13\x02\xcc\xa9\xcc\xa8"
+		"\x13\x01\x13\x03\x13\x02\xcc\xa9\xcc\xa8"
 		"\xc0\x2b\xc0\x2f\xc0\x2c\xc0\x30\xc0\x13\xc0\x14"
 		"\x00\x9c\x00\x9d\x00\x2f\x00\x35", 30);  // 2 + 28 = 30 bytes (15 suites)
 
@@ -712,7 +712,7 @@ ClientHello Generator::take() {
 	// pre_shared_key (if present) is always last, outside shuffle.
 	QVector<QByteArray> perm;
 	perm.append(sniExt);                                                  // server_name
-	perm.append(ext(uint16(uint8_t(gv2[0]) << 8 | uint8_t(gv2[1])), QByteArray("\x00\x00", 2)));  // GREASE ext1
+	perm.append(ext(uint16(uint8_t(gv2[0]) << 8 | uint8_t(gv2[1])), QByteArray()));  // GREASE ext1
 	perm.append(ext(0xff01, QByteArray(1, char(0))));                    // renegotiation_info
 	perm.append(ext(0x0017, QByteArray()));                              // extended_master_secret
 	perm.append(ext(0x001b, QByteArray("\x02\x00\x02", 3)));            // compress_certificate
@@ -728,7 +728,7 @@ ClientHello Generator::take() {
 	perm.append(alpnExt);                                                // ALPN
 	perm.append(ext(0x44cd, QByteArray("\x00\x03\x02h2", 5)));          // application_settings
 	perm.append(echExt);                                                 // ECH GREASE
-	perm.append(ext(uint16(uint8_t(gv4[0]) << 8 | uint8_t(gv4[1])), QByteArray("\x00\x01\x00", 3))); // GREASE ext2
+	perm.append(ext(uint16(uint8_t(gv4[0]) << 8 | uint8_t(gv4[1])), QByteArray(1, char(0)))); // GREASE ext2
 
 	std::random_device rd;
 	std::mt19937 gen(rd());
