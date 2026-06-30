@@ -66,6 +66,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace {
 
 constexpr auto kSaveSettingsDelayedTimeout = crl::time(1000);
+constexpr auto kProxyCheckCooldown = crl::time(30000);
 
 using ProxyData = MTP::ProxyData;
 
@@ -2018,7 +2019,13 @@ auto ProxiesBoxController::proxySettingsValue() const
 }
 
 void ProxiesBoxController::refreshChecker(Item &item) {
+	if (item.state != ItemState::Checking
+		&& item.lastCheckTime
+		&& (crl::now() - item.lastCheckTime) < kProxyCheckCooldown) {
+		return;
+	}
 	item.state = ItemState::Checking;
+	item.lastCheckTime = crl::now();
 	const auto id = item.id;
 	MTP::StartProxyCheck(
 		&_account->mtp(),

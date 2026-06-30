@@ -112,6 +112,7 @@ private:
 		Checker checkerv6;
 		ItemState state = ItemState::Checking;
 		int ping = 0;
+		crl::time lastCheckTime = 0;
 
 	};
 
