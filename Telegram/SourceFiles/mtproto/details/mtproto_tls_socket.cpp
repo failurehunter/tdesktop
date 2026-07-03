@@ -691,7 +691,7 @@ ClientHello Generator::take() {
 				&pubLen);
 			EVP_PKEY_free(echKey);
 		}
-		const uint8 kInnerLen = 128 + (static_cast<uint8>(seed[0]) & 0x03) * 32; // 128/160/192/224
+		const uint8 kInnerLen = 128 + base::RandomIndex(4) * 32; // 128/160/192/224
 		auto echInner = bytes::vector(kInnerLen + 16); // +16 for ChaCha20Poly1305 tag
 		base::RandomFill(echInner.data(), echInner.size());
 		const auto configId = QByteArray(1, static_cast<char>(seed[5]));
