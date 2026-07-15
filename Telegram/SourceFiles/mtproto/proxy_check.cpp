@@ -9,8 +9,52 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/facade.h"
 #include "mtproto/mtproto_dc_options.h"
+#include "mtproto/mtproto_proxy_data.h"
+
+#include <QtCore/QTimer>
+#include <QtNetwork/QNetworkProxy>
+#include <QtNetwork/QTcpSocket>
 
 namespace MTP {
+namespace {
+
+constexpr auto kProbeTimeout = 1 * crl::time(1000);
+
+void probeTcp(
+		const QString &host,
+		int port,
+		QNetworkProxy proxy,
+		Fn<void(bool alive)> callback) {
+	const auto completed = std::make_shared<bool>(false);
+	const auto socket = new QTcpSocket;
+	socket->setProxy(proxy);
+
+	QObject::connect(socket, &QTcpSocket::connected, [=] {
+		if (*completed) return;
+		*completed = true;
+		socket->disconnectFromHost();
+		socket->deleteLater();
+		callback(true);
+	});
+	QObject::connect(socket, &QTcpSocket::errorOccurred, [=] {
+		if (*completed) return;
+		*completed = true;
+		socket->deleteLater();
+		callback(false);
+	});
+
+	QTimer::singleShot(kProbeTimeout, socket, [=] {
+		if (*completed) return;
+		*completed = true;
+		socket->abort();
+		socket->deleteLater();
+		callback(false);
+	});
+
+	socket->connectToHost(host, port);
+}
+
+} // namespace
 
 using Connection = details::AbstractConnection;
 
@@ -86,12 +130,25 @@ void StartProxyCheck(
 	if (proxy.type == ProxyData::Type::Mtproto) {
 		const auto secret = proxy.secretFromMtprotoPassword();
 		setup(v4, secret);
-		v4->connectToServer(
+		const auto raw = v4.get();
+		probeTcp(
 			proxy.host,
 			proxy.port,
-			secret,
-			dcId,
-			false);
+			QNetworkProxy::NoProxy,
+			[=](bool alive) {
+				if (!alive) {
+					if (fail) {
+						fail(raw);
+					}
+					return;
+				}
+				raw->connectToServer(
+					proxy.host,
+					proxy.port,
+					secret,
+					dcId,
+					false);
+			});
 		return;
 	}
 	const auto options = mtproto->dcOptions().lookup(
@@ -105,13 +162,29 @@ void StartProxyCheck(
 			return;
 		}
 		const auto &endpoint = list.front();
-		setup(checker, endpoint.secret);
-		checker->connectToServer(
-			QString::fromStdString(endpoint.ip),
-			endpoint.port,
-			endpoint.secret,
-			dcId,
-			false);
+		const auto host = QString::fromStdString(endpoint.ip);
+		const auto port = endpoint.port;
+		const auto secret = endpoint.secret;
+		setup(checker, secret);
+		const auto raw = checker.get();
+		probeTcp(
+			host,
+			port,
+			ToNetworkProxy(proxy),
+			[=](bool alive) {
+				if (!alive) {
+					if (fail) {
+						fail(raw);
+					}
+					return;
+				}
+				raw->connectToServer(
+					host,
+					port,
+					secret,
+					dcId,
+					false);
+			});
 	};
 	tryConnect(v4, Variants::IPv4);
 	tryConnect(v6, Variants::IPv6);
