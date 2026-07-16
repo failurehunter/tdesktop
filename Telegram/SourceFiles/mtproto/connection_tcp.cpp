@@ -245,14 +245,21 @@ auto TcpConnection::Protocol::Create(bytes::const_span secret)
 	Unexpected("Secret bytes in TcpConnection::Protocol::Create.");
 }
 
+constexpr auto kConnectPhaseTimeout = 1 * crl::time(1000);
+
 TcpConnection::TcpConnection(
 	not_null<Instance*> instance,
 	QThread *thread,
 	const ProxyData &proxy)
 : AbstractConnection(thread, proxy)
 , _instance(instance)
-, _checkNonce(base::RandomValue<MTPint128>()) {
-	fprintf(stderr, "TcpConnection ctor: _proxy.clientHello=%d\n", int(_proxy.clientHello));
+, _checkNonce(base::RandomValue<MTPint128>())
+, _connectPhaseTimer([=] {
+	if (_socket) {
+		CONNECTION_LOG_INFO("Connect phase timeout, aborting.");
+		_socket->abort();
+	}
+}) {
 }
 
 ConnectionPointer TcpConnection::clone(const ProxyData &proxy) {
@@ -500,6 +507,7 @@ void TcpConnection::disconnectFromServer() {
 		return;
 	}
 	_status = Status::Finished;
+	_connectPhaseTimer.cancel();
 	_connectedLifetime.destroy();
 	_lifetime.destroy();
 	_socket = nullptr;
@@ -551,6 +559,7 @@ void TcpConnection::connectToServer(
 
 	_socket->connected(
 	) | rpl::on_next([=] {
+		_connectPhaseTimer.cancel();
 		socketConnected();
 	}, _connectedLifetime);
 
@@ -575,6 +584,7 @@ void TcpConnection::connectToServer(
 	}, _lifetime);
 
 	_socket->connectToHost(_address, _port);
+	_connectPhaseTimer.callOnce(kConnectPhaseTimeout);
 }
 
 crl::time TcpConnection::pingTime() const {

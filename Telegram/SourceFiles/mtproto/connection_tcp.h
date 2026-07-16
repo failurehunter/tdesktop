@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "mtproto/connection_abstract.h"
 #include "mtproto/mtproto_auth_key.h"
+#include "base/timer.h"
 
 namespace MTP {
 namespace details {
@@ -92,6 +93,7 @@ private:
 	QString _address;
 	int32 _port = 0;
 	crl::time _pingTime = 0;
+	base::Timer _connectPhaseTimer;
 
 	rpl::lifetime _connectedLifetime;
 	rpl::lifetime _lifetime;
