@@ -256,8 +256,9 @@ TcpConnection::TcpConnection(
 , _checkNonce(base::RandomValue<MTPint128>())
 , _connectPhaseTimer([=] {
 	if (_socket) {
-		CONNECTION_LOG_INFO("Connect phase timeout, aborting.");
-		_socket->abort();
+		CONNECTION_LOG_INFO("Connect phase timeout.");
+		_socket = nullptr;
+		error(kErrorCodeOther);
 	}
 }) {
 }
