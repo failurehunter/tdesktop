@@ -74,6 +74,11 @@ void StartProxyCheck(
 			if (done) {
 				done(raw, raw->pingTime());
 			}
+			// ponytail: disconnect error/disconnected after confirmed
+			// success to prevent self-inflicted RST from teardown
+			// overwriting a valid pq-response with a failure.
+			QObject::disconnect(raw, &Connection::disconnected, nullptr, nullptr);
+			QObject::disconnect(raw, &Connection::error, nullptr, nullptr);
 		});
 		const auto failed = [=] {
 			if (fail) {
