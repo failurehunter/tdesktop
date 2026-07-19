@@ -27,6 +27,7 @@ constexpr auto kHelloDigestLength = 32;
 constexpr auto kLengthSize = sizeof(uint16);
 const auto kServerHelloPart1 = qstr("\x16\x03\x03");
 const auto kServerHelloPart3 = qstr("\x14\x03\x03\x00\x01\x01\x17\x03\x03");
+constexpr auto kMaxServerHelloLength = 65536;
 constexpr auto kServerHelloDigestPosition = 11;
 const auto kServerHeader = qstr("\x17\x03\x03");
 constexpr auto kClientPartSize = 2878;
@@ -910,58 +911,79 @@ void TlsSocket::readHello() {
 		}
 		_incoming.append(_socket.readAll());
 	}
-	// All needed bytes are present — compute full length including tickets.
-	// Start scanning from the beginning of the server response (after digest).
-	// SkipTlsRecords will walk through ServerHello, CCS, AppData, tickets.
-	const auto fullSpan = bytes::make_span(_incoming);
-	const auto afterHello = fullSpan.subspan(kHelloDigestLength);
-	_serverHelloLength = SkipTlsRecords(afterHello);
-	// If tickets haven't fully arrived yet — wait for more.
-	if (!requiredHelloPartReady()) {
-		return;
-	}
-	checkHelloParts12();
+	checkHelloParts12(parts1Size);
 }
 
-void TlsSocket::checkHelloParts12() {
-	// Validate ServerHello header (first 5 bytes after digest).
-	const auto headerSize = kServerHelloPart1.size() + kLengthSize;
+void TlsSocket::checkHelloParts12(int parts1Size) {
 	const auto data = bytes::make_span(_incoming).subspan(
 		kHelloDigestLength,
-		headerSize);
-	const auto part1Offset = headerSize
-		- kLengthSize
-		- kServerHelloPart1.size();
-	if (!CheckPart(data.subspan(part1Offset), kServerHelloPart1)) {
-		logError(888, "Bad Server Hello part1.");
+		parts1Size);
+	const auto part2Size = ReadPartLength(data, parts1Size - kLengthSize);
+	const auto parts123Size = parts1Size
+		+ part2Size
+		+ kServerHelloPart3.size()
+		+ kLengthSize;
+	if (parts123Size > kMaxServerHelloLength) {
+		logError(888, "Bad Server Hello size.");
 		handleError();
 		return;
 	}
-	// _serverHelloLength already computed correctly in readHello().
+	if (_serverHelloLength == parts1Size) {
+		const auto part1Offset = parts1Size
+			- kLengthSize
+			- kServerHelloPart1.size();
+		if (!CheckPart(data.subspan(part1Offset), kServerHelloPart1)) {
+			logError(888, "Bad Server Hello part1.");
+			handleError();
+			return;
+		}
+		_serverHelloLength = parts123Size;
+		if (!requiredHelloPartReady()) {
+			readHello();
+			return;
+		}
+	}
+	checkHelloParts34(parts123Size);
+}
+
+void TlsSocket::checkHelloParts34(int parts123Size) {
+	const auto data = bytes::make_span(_incoming).subspan(
+		kHelloDigestLength,
+		parts123Size);
+	const auto part4Size = ReadPartLength(data, parts123Size - kLengthSize);
+	const auto full = parts123Size + part4Size;
+	if (full > kMaxServerHelloLength) {
+		logError(888, "Bad Server Hello size.");
+		handleError();
+		return;
+	}
+	if (_serverHelloLength == parts123Size) {
+		const auto part3Offset = parts123Size
+			- kLengthSize
+			- kServerHelloPart3.size();
+		if (!CheckPart(data.subspan(part3Offset), kServerHelloPart3)) {
+			logError(888, "Bad Server Hello part.");
+			handleError();
+			return;
+		}
+		_serverHelloLength = full;
+		if (!requiredHelloPartReady()) {
+			readHello();
+			return;
+		}
+	}
 	checkHelloDigest();
 }
 
-int TlsSocket::SkipTlsRecords(bytes::const_span data) const {
-	auto offset = int(0);
-	while (offset + 5 <= data.size()) {
-		const auto recordLen = ReadPartLength(data, offset + 3);
-		const auto totalLen = 5 + recordLen;
-		if (offset + totalLen > data.size()) {
-			break;
-		}
-		offset += totalLen;
-	}
-	return offset;
-}
-
 void TlsSocket::checkHelloDigest() {
-	// HMAC is computed over client_digest + entire server response
-	// (ServerHello + CCS + app_data + any trailing ticket-mimic records).
-	// Some proxies (e.g. telemt) append fake NewSessionTicket ApplicationData
-	// records after the handshake and include them in the HMAC input.
+	if (_serverHelloLength < kServerHelloDigestPosition + kHelloDigestLength) {
+		logError(888, "Bad Server Hello size.");
+		handleError();
+		return;
+	}
 	const auto fulldata = bytes::make_detached_span(_incoming).subspan(
 		0,
-		_incoming.size());
+		kHelloDigestLength + _serverHelloLength);
 	const auto digest = fulldata.subspan(
 		kHelloDigestLength + kServerHelloDigestPosition,
 		kHelloDigestLength);
@@ -973,8 +995,7 @@ void TlsSocket::checkHelloDigest() {
 		handleError();
 		return;
 	}
-	// Shift past the entire TLS response (ServerHello + CCS + app_data + tickets).
-	shiftIncomingBy(kHelloDigestLength + _serverHelloLength);
+	shiftIncomingBy(fulldata.size());
 	if (!_incoming.isEmpty()) {
 		InvokeQueued(this, [=] {
 			if (!checkNextPacket()) {
