@@ -7,6 +7,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+namespace WaylandNotifLayer {
+class LayerSurface;
+} // namespace WaylandNotifLayer
+#endif
+
 #include "window/notifications_manager.h"
 #include "ui/effects/animations.h"
 #include "ui/text/text.h"
@@ -171,7 +177,7 @@ protected:
 		return _manager;
 	}
 
-private:
+protected:
 	void opacityAnimationCallback();
 	void moveByShift();
 	void hideAnimated(float64 duration, const anim::transition &func);
@@ -187,6 +193,12 @@ private:
 	Direction _direction;
 	anim::value _shift;
 	Ui::Animations::Basic _shiftAnimation;
+
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	std::unique_ptr<WaylandNotifLayer::LayerSurface> _layerSurface;
+	void ensureLayerSurface();
+	void submitLayerFrame();
+#endif
 
 };
 
