@@ -2387,7 +2387,10 @@ void SessionPrivate::onConnected(
 		_testConnections,
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
-	Assert(i != end(_testConnections));
+	if (i == end(_testConnections)) {
+		connection->disconnectFromServer();
+		return;
+	}
 	const auto my = i->priority;
 	const auto j = ranges::find_if(
 		_testConnections,
@@ -2441,9 +2444,6 @@ void SessionPrivate::confirmBestConnection() {
 		).arg(i->data->tag()));
 
 	_connection = std::move(i->data);
-	// ponytail: same as in onConnected() — stagger makes priority
-	// competition moot, stop the queue.
-	cancelStaggeredConnect();
 	_testConnections.clear();
 
 	checkAuthKey();
