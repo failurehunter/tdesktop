@@ -222,7 +222,7 @@ private:
 	base::Timer _checkSentRequestsTimer;
 	base::Timer _clearOldContainersTimer;
 	base::Timer _staggeredConnectTimer;
-	crl::time _staggeredConnectNext = 0;
+	int _staggeredConnectNext = 0;
 	std::vector<std::tuple<
 		DcOptions::Variants::Protocol,
 		QString,

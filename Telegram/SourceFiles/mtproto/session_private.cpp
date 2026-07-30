@@ -51,6 +51,11 @@ constexpr auto kFastRequestDuration = crl::time(500);
 // call. A value of 0 keeps the old burst behavior; a small positive value
 // spreads the initial TCP+PQ handshake packets over time so network filters
 // do not see a single connection flood from one source port / IP.
+// ponytail: stagger changes priority semantics — the first connection that
+// succeeds wins, the old "wait for a higher priority endpoint" logic inside
+// onConnected()/confirmBestConnection() is effectively dead code. If someone
+// wants strict priority selection they must check the stagger queue, not
+// just _testConnections.
 constexpr auto kStaggeredConnectDelay = crl::time(300);
 
 // If we can't connect for this time we will ask _instance to update config.
@@ -2382,7 +2387,10 @@ void SessionPrivate::onConnected(
 		_testConnections,
 		connection.get(),
 		[](const TestConnection &test) { return test.data.get(); });
-	Assert(i != end(_testConnections));
+	if (i == end(_testConnections)) {
+		connection->disconnectFromServer();
+		return;
+	}
 	const auto my = i->priority;
 	const auto j = ranges::find_if(
 		_testConnections,
@@ -2395,6 +2403,10 @@ void SessionPrivate::onConnected(
 	} else {
 		DEBUG_LOG(("MTP Info: connection through IPv4 succeed."));
 		_waitForBetterTimer.cancel();
+		// ponytail: stagger spreads connections in time so the first one
+		// to connect effectively wins, the old "wait for a higher priority
+		// endpoint" logic no longer applies in practice.
+		cancelStaggeredConnect();
 		_connection = std::move(i->data);
 		_testConnections.clear();
 		checkAuthKey();
