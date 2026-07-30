@@ -2462,8 +2462,6 @@ void SessionPrivate::removeTestConnection(
 void SessionPrivate::checkAuthKey() {
 	if (_keyId) {
 		authKeyChecked();
-	} else if (_keyCreator) {
-		return;
 	} else if (_instance->isKeysDestroyer()) {
 		applyAuthKey(_sessionData->getPersistentKey());
 	} else {
