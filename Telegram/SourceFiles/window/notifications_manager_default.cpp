@@ -38,6 +38,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/history_view_item_preview.h"
 #include "base/platform/base_platform_last_input.h"
 #include "base/call_delayed.h"
+#include "base/debug_log.h"
 #include "styles/style_dialogs.h"
 #include "styles/style_layers.h"
 #include "styles/style_window.h"
@@ -981,8 +982,12 @@ namespace Notifications {
 	wayland.proxyDestroy(reinterpret_cast<wl_proxy*>(sync));
 	wayland.proxyDestroy(registry);
 
-	cached = state.found;
-	known = true;
+	if (state.done) {
+		LOG(("Wayland layer shell detection: %1")
+			.arg(state.found ? "available" : "not available"));
+		cached = state.found;
+		known = true;
+	}
 	return state.found;
 #else
 	return false;

@@ -200,6 +200,12 @@ bool WaitForInputForCustom() {
 }
 
 bool Supported() {
+	// With a layer shell the app renders custom notifications itself,
+	// so native ones are not offered even if a DBus daemon or
+	// GNotification is present.
+	if (IsWayland() && Window::Notifications::HasLayerShell()) {
+		return false;
+	}
 	return ServiceRegistered || UseGNotification();
 }
 
