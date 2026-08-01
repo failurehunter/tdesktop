@@ -204,12 +204,7 @@ bool Supported() {
 }
 
 bool Enforced() {
-	// With a layer shell the app renders custom notifications itself,
-	// so native ones are not enforced even if GNotification is enabled.
-	if (IsWayland() && Window::Notifications::HasLayerShell()) {
-		return false;
-	}
-	return IsWayland()
+	return (IsWayland() && !Window::Notifications::HasLayerShell())
 		|| (Gio::Application::get_default()
 			&& Window::Notifications::OptionGNotification.value());
 }
