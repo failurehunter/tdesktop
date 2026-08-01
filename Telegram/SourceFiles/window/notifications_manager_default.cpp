@@ -247,7 +247,6 @@ struct WaylandSymbols {
 	uint32_t (*proxyGetVersion)(wl_proxy*) = nullptr;
 	int (*displayRoundtrip)(wl_display*) = nullptr;
 	wl_proxy* (*displaySync)(wl_display*) = nullptr;
-	int (*displayFlush)(wl_display*) = nullptr;
 	const wl_interface *registryInterface = nullptr;
 
 	[[nodiscard]] explicit operator bool() const {
@@ -257,7 +256,6 @@ struct WaylandSymbols {
 			&& proxyGetVersion
 			&& displayRoundtrip
 			&& displaySync
-			&& displayFlush
 			&& registryInterface;
 	}
 };
@@ -274,7 +272,6 @@ struct WaylandSymbols {
 			base::Platform::LoadSymbol(lib, "wl_proxy_get_version", result.proxyGetVersion);
 			base::Platform::LoadSymbol(lib, "wl_display_roundtrip", result.displayRoundtrip);
 			base::Platform::LoadSymbol(lib, "wl_display_sync", result.displaySync);
-			base::Platform::LoadSymbol(lib, "wl_display_flush", result.displayFlush);
 			base::Platform::LoadSymbol(lib, "wl_registry_interface", result.registryInterface);
 		}
 		return result;
@@ -349,7 +346,6 @@ public:
 			reinterpret_cast<void(**)(void)>(&_syncListener),
 			this);
 		_syncCallback = sync;
-		wayland->displayFlush(display);
 	}
 
 	void setSize(int width, int height) {
@@ -458,7 +454,7 @@ public:
 
 		wayland.proxyMarshalFlags(
 			reinterpret_cast<wl_proxy*>(_surface),
-			9, // wl_surface.damage_buffer
+			2, // wl_surface.damage_buffer
 			nullptr,
 			wayland.proxyGetVersion(reinterpret_cast<wl_proxy*>(_surface)),
 			0,
@@ -481,9 +477,6 @@ public:
 			nullptr,
 			wayland.proxyGetVersion(reinterpret_cast<wl_proxy*>(_surface)),
 			0);
-		if (_display) {
-			wayland.displayFlush(_display);
-		}
 	}
 
 	void destroy() {
@@ -743,9 +736,6 @@ private:
 			reinterpret_cast<wl_proxy*>(_pointer),
 			reinterpret_cast<void(**)(void)>(&pointerListener),
 			this);
-		if (_display) {
-			wayland.displayFlush(_display);
-		}
 	}
 
 	void ackConfigure(const WaylandSymbols &wayland) {
@@ -892,14 +882,8 @@ namespace Notifications {
 		reinterpret_cast<void(**)(void)>(&syncListener),
 		&state);
 
-	// Push the registry + sync requests to the socket immediately.
-	// Qt flushes lazily (inside its readEvents), so without this the
-	// probe would sit in our buffer until some unrelated event arrives
-	// and the 500 ms timeout would fire first.
-	wayland.displayFlush(display);
-
 	// Process events through Qt's event loop until sync callback fires.
-	// No direct socket I/O — dispatch happens via Qt's QSocketNotifier.
+	// No direct socket I/O — Qt's QSocketNotifier handles flush + dispatch.
 	{
 		auto loop = QEventLoop();
 		auto timer = QTimer(&loop);
