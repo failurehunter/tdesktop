@@ -44,6 +44,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtGui/QGuiApplication>
 #include <QtGui/QScreen>
+#include <QtGui/QMouseEvent>
+#include <QtGui/QEnterEvent>
 #include <QTimer>
 #include <QEventLoop>
 
@@ -282,6 +284,19 @@ struct WaylandSymbols {
 	return result;
 }
 
+struct PointerEvent {
+	enum class Type {
+		Enter,
+		Leave,
+		Move,
+		Press,
+		Release,
+	};
+	Type type = Type::Move;
+	QPoint position;
+	Qt::MouseButton button = Qt::NoButton;
+};
+
 class LayerSurface final {
 public:
 	LayerSurface() = default;
@@ -291,8 +306,8 @@ public:
 		destroy();
 	}
 
-	void setOnClick(Fn<void()> callback) {
-		_onClick = std::move(callback);
+	void setOnPointer(Fn<void(PointerEvent)> callback) {
+		_onPointer = std::move(callback);
 	}
 
 	void create() {
@@ -386,6 +401,8 @@ public:
 		if (!_surface || !_layerSurface) return;
 		const auto &wayland = Wayland();
 		if (!wayland) return;
+
+		_scale = image.devicePixelRatio();
 
 		ackConfigure(wayland);
 
@@ -719,21 +736,56 @@ private:
 		if (!_pointer) return;
 
 		auto pointerListener = wl_pointer_listener{
-			[](void *, struct wl_pointer *, uint32_t,
-				struct wl_surface *, wl_fixed_t, wl_fixed_t) {
+			[](void *data, struct wl_pointer *, uint32_t,
+				struct wl_surface *, wl_fixed_t x, wl_fixed_t y) {
+				auto self = static_cast<LayerSurface*>(data);
+				if (self->_onPointer) {
+					self->_onPointer(PointerEvent{
+						.type = PointerEvent::Type::Enter,
+						.position = self->surfaceToWidget(x, y),
+					});
+				}
 			},
-			[](void *, struct wl_pointer *, uint32_t, struct wl_surface *) {
+			[](void *data, struct wl_pointer *, uint32_t,
+				struct wl_surface *) {
+				auto self = static_cast<LayerSurface*>(data);
+				if (self->_onPointer) {
+					self->_onPointer(PointerEvent{
+						.type = PointerEvent::Type::Leave,
+					});
+				}
 			},
-			[](void *, struct wl_pointer *, uint32_t, wl_fixed_t, wl_fixed_t) {
+			[](void *data, struct wl_pointer *, uint32_t,
+				wl_fixed_t x, wl_fixed_t y) {
+				auto self = static_cast<LayerSurface*>(data);
+				if (self->_onPointer) {
+					self->_onPointer(PointerEvent{
+						.type = PointerEvent::Type::Move,
+						.position = self->surfaceToWidget(x, y),
+					});
+				}
 			},
 			[](void *data, struct wl_pointer *, uint32_t,
 				uint32_t, uint32_t button, uint32_t state) {
-				// BTN_LEFT = 0x110, WL_POINTER_BUTTON_STATE_PRESSED = 1
-				if (state == 1 && button == 0x110) {
-					const auto self = static_cast<LayerSurface*>(data);
-					if (self->_onClick) {
-						self->_onClick();
+				auto self = static_cast<LayerSurface*>(data);
+				if (!self->_onPointer) {
+					return;
+				}
+				const auto mapped = [&]() -> Qt::MouseButton {
+					switch (button) {
+					case 0x110: return Qt::LeftButton;
+					case 0x111: return Qt::RightButton;
+					case 0x112: return Qt::MiddleButton;
 					}
+					return Qt::NoButton;
+				}();
+				if (mapped != Qt::NoButton) {
+					self->_onPointer(PointerEvent{
+						.type = (state == 1)
+							? PointerEvent::Type::Press
+							: PointerEvent::Type::Release,
+						.button = mapped,
+					});
 				}
 			},
 			[](void *, struct wl_pointer *, uint32_t, uint32_t, wl_fixed_t) {
@@ -780,7 +832,17 @@ private:
 	uint32_t _configureSerial = 0;
 	int _width = 0;
 	int _height = 0;
-	Fn<void()> _onClick;
+	float64 _scale = 1.;
+	Fn<void(PointerEvent)> _onPointer;
+
+	[[nodiscard]] QPoint surfaceToWidget(
+			wl_fixed_t x,
+			wl_fixed_t y) const {
+		const auto scale = (_scale > 0.) ? _scale : 1.;
+		return QPoint(
+			int(x / 256. / scale),
+			int(y / 256. / scale));
+	}
 
 	static inline auto _registryListener = wl_registry_listener{
 		[](void *data, struct wl_registry *, uint32_t name,
@@ -1388,6 +1450,10 @@ Widget::Widget(
 #if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
 	if (HasLayerShell()) {
 		_layerSurface = std::make_unique<WaylandNotifLayer::LayerSurface>();
+		_layerSurface->setOnPointer(
+			[this](const WaylandNotifLayer::PointerEvent &event) {
+				handleLayerPointer(event);
+			});
 		InvokeQueued(this, [=] { ensureLayerSurface(); });
 	}
 #endif
@@ -1500,13 +1566,7 @@ void Widget::updateGeometry(int x, int y, int width, int height) {
 	update();
 #if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
 	if (_layerSurface && _layerSurface->isValid()) {
-		const auto pos = computePosition(height);
-		_layerSurface->setSize(width, height);
-		_layerSurface->setMargin(
-			pos.y(),
-			0,
-			0,
-			pos.x());
+		updateLayerGeometry();
 		submitLayerFrame();
 	}
 #endif
@@ -1543,7 +1603,15 @@ void Widget::ensureLayerSurface() {
 	_layerSurface->create();
 	if (_layerSurface->isValid()) {
 		hide();
+		updateLayerGeometry();
 	}
+}
+
+void Widget::updateLayerGeometry() {
+	const auto ratio = style::DevicePixelRatio();
+	const auto pos = computePosition(height());
+	_layerSurface->setSize(int(width() * ratio), int(height() * ratio));
+	_layerSurface->setMargin(pos.y(), 0, 0, pos.x());
 }
 
 void Widget::submitLayerFrame() {
@@ -1573,10 +1641,121 @@ void Widget::submitLayerFrame() {
 		painter.end();
 	}
 
-	_layerSurface->setSize(width() * ratio, height() * ratio);
-	const auto pos = computePosition(height());
-	_layerSurface->setMargin(pos.y(), 0, 0, pos.x());
 	_layerSurface->submit(image);
+}
+
+void Widget::handleLayerPointer(const WaylandNotifLayer::PointerEvent &event) {
+	if (!_layerSurface || !_layerSurface->isValid()) {
+		return;
+	}
+	using Type = WaylandNotifLayer::PointerEvent::Type;
+	auto reRender = false;
+	switch (event.type) {
+	case Type::Enter: {
+		_layerPointerPosition = event.position;
+		enterLayerWidget();
+		reRender = true;
+	} break;
+	case Type::Leave: {
+		_layerPointerPosition = event.position;
+		leaveLayerWidget();
+		_layerPressed = nullptr;
+		_layerButtonsState = {};
+		reRender = true;
+	} break;
+	case Type::Move: {
+		_layerPointerPosition = event.position;
+	} break;
+	case Type::Press: {
+		_layerPointerPosition = event.position;
+		_layerButtonsState |= event.button;
+		pressLayerButton(event.button);
+		reRender = true;
+	} break;
+	case Type::Release: {
+		_layerPointerPosition = event.position;
+		releaseLayerButton(event.button);
+		_layerButtonsState &= ~event.button;
+		reRender = true;
+	} break;
+	}
+	if (reRender) {
+		submitLayerFrame();
+	}
+}
+
+void Widget::enterLayerWidget() {
+	const auto global = mapToGlobal(_layerPointerPosition);
+	QEnterEvent enter(
+		_layerPointerPosition,
+		_layerPointerPosition,
+		global);
+	QCoreApplication::sendEvent(this, &enter);
+}
+
+void Widget::leaveLayerWidget() {
+	QEvent leave(QEvent::Leave);
+	QCoreApplication::sendEvent(this, &leave);
+}
+
+QWidget *Widget::layerChildAt(QWidget *root, QPoint position) const {
+	for (auto i = root->children().rbegin();
+			i != root->children().rend(); ++i) {
+		const auto child = qobject_cast<QWidget*>(*i);
+		if (!child
+			|| child->isHidden()
+			|| !child->geometry().contains(position)) {
+			continue;
+		}
+		const auto local = position - child->pos();
+		if (const auto inner = layerChildAt(child, local)) {
+			return inner;
+		}
+		return child;
+	}
+	return nullptr;
+}
+
+QWidget *Widget::layerChildAt(const QPoint &position) const {
+	return layerChildAt(const_cast<Widget*>(this), position);
+}
+
+void Widget::sendLayerMouse(
+		QEvent::Type type,
+		Qt::MouseButton button,
+		QWidget *target) {
+	auto local = _layerPointerPosition;
+	for (auto widget = target; widget && widget != this;) {
+		local -= widget->pos();
+		widget = widget->parentWidget();
+	}
+	const auto global = mapToGlobal(_layerPointerPosition);
+	QMouseEvent event(
+		type,
+		local,
+		local,
+		global,
+		button,
+		_layerButtonsState,
+		{});
+	QCoreApplication::sendEvent(target, &event);
+}
+
+void Widget::pressLayerButton(Qt::MouseButton button) {
+	const auto child = layerChildAt(_layerPointerPosition);
+	const auto target = child ? child : this;
+	_layerPressed = target;
+	sendLayerMouse(QEvent::MouseButtonPress, button, target);
+}
+
+void Widget::releaseLayerButton(Qt::MouseButton button) {
+	const auto target = _layerPressed ? _layerPressed : this;
+	_layerPressed = nullptr;
+	sendLayerMouse(QEvent::MouseButtonRelease, button, target);
+}
+
+bool Widget::layerSurfaceActive() const {
+	return _layerSurface && _layerSurface->isValid();
 }
 #endif
 
@@ -1677,14 +1856,6 @@ Notification::Notification(
 	show();
 #if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
 	if (_layerSurface) {
-		const auto mgr = Widget::manager();
-		const auto id = myId();
-		_layerSurface->setOnClick([mgr, id, history = _history] {
-			if (!history) return;
-			mgr->notificationActivated(id, {
-				.allowNewWindow = true,
-			});
-		});
 		ensureLayerSurface();
 		submitLayerFrame();
 	}
@@ -1779,6 +1950,11 @@ void Notification::paintEvent(QPaintEvent *e) {
 
 void Notification::actionsOpacityCallback() {
 	update();
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	if (layerSurfaceActive()) {
+		submitLayerFrame();
+	}
+#endif
 	if (!a_actionsOpacity.animating() && _actionsVisible) {
 		_reply->show();
 	}
@@ -2033,6 +2209,11 @@ void Notification::updatePeerPhoto() {
 		st::notifyPhotoSize);
 	_userpicView = {};
 	update();
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	if (layerSurfaceActive()) {
+		submitLayerFrame();
+	}
+#endif
 }
 
 bool Notification::unlinkItem(HistoryItem *deleted) {
@@ -2069,8 +2250,15 @@ void Notification::showReplyField() {
 	if (!_item) {
 		return;
 	}
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	if (!layerSurfaceActive()) {
+		raise();
+		activateWindow();
+	}
+#else
 	raise();
 	activateWindow();
+#endif
 
 	if (_replyArea) {
 		_replyArea->setFocus();
@@ -2215,6 +2403,11 @@ bool Notification::eventFilter(QObject *o, QEvent *e) {
 	if (e->type() == QEvent::MouseButtonPress) {
 		if (auto receiver = qobject_cast<QWidget*>(o)) {
 			if (isAncestorOf(receiver)) {
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+				if (layerSurfaceActive()) {
+					return false;
+				}
+#endif
 				raise();
 				activateWindow();
 			}
@@ -2248,10 +2441,6 @@ HideAllButton::HideAllButton(
 	show();
 #if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
 	if (_layerSurface) {
-		const auto mgr = Widget::manager();
-		_layerSurface->setOnClick([mgr] {
-			mgr->clearAll();
-		});
 		ensureLayerSurface();
 		submitLayerFrame();
 	}

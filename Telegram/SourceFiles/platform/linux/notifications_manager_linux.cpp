@@ -215,6 +215,10 @@ bool Enforced() {
 }
 
 bool ByDefault() {
+	if (IsWayland() && Window::Notifications::HasLayerShell()) {
+		return false;
+	}
+
 	// The capabilities are static, equivalent to 'body' and 'actions' only
 	if (UseGNotification()) {
 		return false;
