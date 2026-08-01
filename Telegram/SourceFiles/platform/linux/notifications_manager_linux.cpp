@@ -204,7 +204,9 @@ bool Supported() {
 }
 
 bool Enforced() {
-	return (IsWayland() && !Window::Notifications::HasLayerShell())
+	// Wayland doesn't support positioning
+	// and custom notifications don't work here
+	return IsWayland()
 		|| (Gio::Application::get_default()
 			&& Window::Notifications::OptionGNotification.value());
 }
