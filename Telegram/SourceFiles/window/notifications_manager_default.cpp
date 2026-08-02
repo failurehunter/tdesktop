@@ -248,8 +248,6 @@ struct WaylandSymbols {
 		wl_proxy*, void (**)(void), void*) = nullptr;
 	void (*proxyDestroy)(wl_proxy*) = nullptr;
 	uint32_t (*proxyGetVersion)(wl_proxy*) = nullptr;
-	int (*displayRoundtrip)(wl_display*) = nullptr;
-	wl_proxy* (*displaySync)(wl_display*) = nullptr;
 	int (*displayFlush)(wl_display*) = nullptr;
 	const wl_interface *registryInterface = nullptr;
 
@@ -258,8 +256,6 @@ struct WaylandSymbols {
 			&& proxyAddListener
 			&& proxyDestroy
 			&& proxyGetVersion
-			&& displayRoundtrip
-			&& displaySync
 			&& displayFlush
 			&& registryInterface;
 	}
@@ -275,8 +271,6 @@ struct WaylandSymbols {
 			base::Platform::LoadSymbol(lib, "wl_proxy_add_listener", result.proxyAddListener);
 			base::Platform::LoadSymbol(lib, "wl_proxy_destroy", result.proxyDestroy);
 			base::Platform::LoadSymbol(lib, "wl_proxy_get_version", result.proxyGetVersion);
-			base::Platform::LoadSymbol(lib, "wl_display_roundtrip", result.displayRoundtrip);
-			base::Platform::LoadSymbol(lib, "wl_display_sync", result.displaySync);
 			base::Platform::LoadSymbol(lib, "wl_display_flush", result.displayFlush);
 			base::Platform::LoadSymbol(lib, "wl_registry_interface", result.registryInterface);
 		}
