@@ -1659,7 +1659,7 @@ void Widget::updateLayerGeometry() {
 	applyLayerPosition(pos);
 }
 
-void Widget::applyLayerPosition(const QPoint &pos) {
+void Widget::applyLayerPosition(QPoint pos) {
 	if (!_layerSurface || !_layerSurface->isValid()) {
 		return;
 	}
