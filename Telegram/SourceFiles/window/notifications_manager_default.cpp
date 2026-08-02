@@ -38,15 +38,999 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/history_view_item_preview.h"
 #include "base/platform/base_platform_last_input.h"
 #include "base/call_delayed.h"
+#include "base/debug_log.h"
 #include "styles/style_dialogs.h"
 #include "styles/style_layers.h"
 #include "styles/style_window.h"
 
 #include <QtGui/QGuiApplication>
 #include <QtGui/QScreen>
+#include <QtGui/QMouseEvent>
+#include <QtGui/QEnterEvent>
+#include <QTimer>
+#include <QEventLoop>
+
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+#include "base/platform/linux/base_linux_library.h"
+
+#include <sys/mman.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+extern "C" {
+
+typedef int32_t wl_fixed_t;
+struct wl_object;
+struct wl_array;
+struct wl_proxy;
+struct wl_display;
+struct wl_registry;
+struct wl_seat;
+struct wl_pointer;
+struct wl_surface;
+struct wl_compositor;
+struct wl_shm;
+struct wl_shm_pool;
+struct wl_buffer;
+struct wl_callback;
+struct zwlr_layer_shell_v1;
+struct zwlr_layer_surface_v1;
+
+union wl_argument {
+	int32_t i;
+	uint32_t u;
+	wl_fixed_t f;
+	const char *s;
+	struct wl_object *o;
+	uint32_t n;
+	struct wl_array *a;
+	int32_t h;
+};
+
+struct wl_message {
+	const char *name;
+	const char *signature;
+	const struct wl_interface **types;
+};
+
+struct wl_interface {
+	const char *name;
+	int version;
+	int method_count;
+	const struct wl_message *methods;
+	int event_count;
+	const struct wl_message *events;
+};
+
+struct wl_registry_listener {
+	void (*global)(
+		void *data,
+		struct wl_registry *registry,
+		uint32_t name,
+		const char *interface,
+		uint32_t version);
+	void (*global_remove)(
+		void *data,
+		struct wl_registry *registry,
+		uint32_t name);
+};
+
+struct wl_seat_listener {
+	void (*capabilities)(void *data, struct wl_seat *seat, uint32_t capabilities);
+	void (*name)(void *data, struct wl_seat *seat, const char *name);
+};
+
+struct wl_callback_listener {
+	void (*done)(void *data, struct wl_callback *callback, uint32_t callback_data);
+};
+
+struct wl_pointer_listener {
+	void (*enter)(void *data, struct wl_pointer *pointer, uint32_t serial, struct wl_surface *surface, wl_fixed_t surface_x, wl_fixed_t surface_y);
+	void (*leave)(void *data, struct wl_pointer *pointer, uint32_t serial, struct wl_surface *surface);
+	void (*motion)(void *data, struct wl_pointer *pointer, uint32_t time, wl_fixed_t surface_x, wl_fixed_t surface_y);
+	void (*button)(void *data, struct wl_pointer *pointer, uint32_t serial, uint32_t time, uint32_t button, uint32_t state);
+	void (*axis)(void *data, struct wl_pointer *pointer, uint32_t time, uint32_t axis, wl_fixed_t value);
+};
+
+}
+
+namespace WaylandNotifLayer {
+
+const auto kCallbackDoneMessage = wl_message{ "done", "u", nullptr };
+const auto kCallbackInterface = wl_interface{
+	"wl_callback",
+	1,
+	0,
+	nullptr,
+	1,
+	&kCallbackDoneMessage,
+};
+
+const auto kLayerShellInterface = wl_interface{
+	"zwlr_layer_shell_v1",
+	4,
+	0,
+	nullptr,
+	0,
+	nullptr,
+};
+
+const auto kLayerSurfaceRequests = std::array{
+	wl_message{ "ack_configure", "u", nullptr },
+	wl_message{ "destroy", "", nullptr },
+	wl_message{ "set_size", "ii", nullptr },
+	wl_message{ "set_anchor", "u", nullptr },
+	wl_message{ "set_exclusive_zone", "i", nullptr },
+	wl_message{ "set_keyboard_interactivity", "u", nullptr },
+	wl_message{ "get_popup", "o", nullptr },
+	wl_message{ "set_margin", "iiii", nullptr },
+	wl_message{ "set_name", "s", nullptr },
+	wl_message{ "set_namespace", "s", nullptr },
+};
+const auto kLayerSurfaceConfigureEvents = std::array{
+	wl_message{ "configure", "uuu", nullptr },
+};
+const auto kLayerSurfaceInterface = wl_interface{
+	"zwlr_layer_surface_v1",
+	1,
+	int(kLayerSurfaceRequests.size()),
+	kLayerSurfaceRequests.data(),
+	int(kLayerSurfaceConfigureEvents.size()),
+	kLayerSurfaceConfigureEvents.data(),
+};
+
+const auto kShmCreatePoolMessage = wl_message{ "create_pool", "nhi", nullptr };
+const auto kShmInterface = wl_interface{
+	"wl_shm",
+	1,
+	1,
+	&kShmCreatePoolMessage,
+	0,
+	nullptr,
+};
+const auto kShmPoolInterface = wl_interface{
+	"wl_shm_pool",
+	1,
+	3,
+	std::array{
+		wl_message{ "create_buffer", "niiiiu", nullptr },
+		wl_message{ "destroy", "", nullptr },
+		wl_message{ "resize", "i", nullptr },
+	}.data(),
+	0,
+	nullptr,
+};
+
+const auto kCompositorCreateSurfaceMessage = wl_message{ "create_surface", "n", nullptr };
+const auto kCompositorInterface = wl_interface{
+	"wl_compositor",
+	6,
+	1,
+	&kCompositorCreateSurfaceMessage,
+	0,
+	nullptr,
+};
+
+const auto kSeatEvents = std::array{
+	wl_message{ "capabilities", "u", nullptr },
+	wl_message{ "name", "s", nullptr },
+};
+const auto kSeatInterface = wl_interface{
+	"wl_seat",
+	5,
+	0,
+	nullptr,
+	int(kSeatEvents.size()),
+	kSeatEvents.data(),
+};
+
+const auto kPointerEvents = std::array{
+	wl_message{ "enter", "uoff", nullptr },
+	wl_message{ "leave", "uou", nullptr },
+	wl_message{ "motion", "uff", nullptr },
+	wl_message{ "button", "uuuu", nullptr },
+	wl_message{ "axis", "uuf", nullptr },
+};
+const auto kPointerInterface = wl_interface{
+	"wl_pointer",
+	1,
+	0,
+	nullptr,
+	int(kPointerEvents.size()),
+	kPointerEvents.data(),
+};
+
+struct WaylandSymbols {
+	wl_proxy* (*proxyMarshalFlags)(
+		wl_proxy*, uint32_t, const wl_interface*,
+		uint32_t, uint32_t, ...) = nullptr;
+	int (*proxyAddListener)(
+		wl_proxy*, void (**)(void), void*) = nullptr;
+	void (*proxyDestroy)(wl_proxy*) = nullptr;
+	uint32_t (*proxyGetVersion)(wl_proxy*) = nullptr;
+	int (*displayRoundtrip)(wl_display*) = nullptr;
+	wl_proxy* (*displaySync)(wl_display*) = nullptr;
+	int (*displayFlush)(wl_display*) = nullptr;
+	const wl_interface *registryInterface = nullptr;
+
+	[[nodiscard]] explicit operator bool() const {
+		return proxyMarshalFlags
+			&& proxyAddListener
+			&& proxyDestroy
+			&& proxyGetVersion
+			&& displayRoundtrip
+			&& displaySync
+			&& displayFlush
+			&& registryInterface;
+	}
+};
+
+[[nodiscard]] const WaylandSymbols &Wayland() {
+	static const auto result = [] {
+		auto result = WaylandSymbols{};
+		if (const auto lib = base::Platform::LoadLibrary(
+				"libwayland-client.so.0",
+				RTLD_NODELETE)) {
+			base::Platform::LoadSymbol(lib, "wl_proxy_marshal_flags", result.proxyMarshalFlags);
+			base::Platform::LoadSymbol(lib, "wl_proxy_add_listener", result.proxyAddListener);
+			base::Platform::LoadSymbol(lib, "wl_proxy_destroy", result.proxyDestroy);
+			base::Platform::LoadSymbol(lib, "wl_proxy_get_version", result.proxyGetVersion);
+			base::Platform::LoadSymbol(lib, "wl_display_roundtrip", result.displayRoundtrip);
+			base::Platform::LoadSymbol(lib, "wl_display_sync", result.displaySync);
+			base::Platform::LoadSymbol(lib, "wl_display_flush", result.displayFlush);
+			base::Platform::LoadSymbol(lib, "wl_registry_interface", result.registryInterface);
+		}
+		return result;
+	}();
+	return result;
+}
+
+struct PointerEvent {
+	enum class Type {
+		Enter,
+		Leave,
+		Move,
+		Press,
+		Release,
+	};
+	Type type = Type::Move;
+	QPoint position;
+	Qt::MouseButton button = Qt::NoButton;
+};
+
+class LayerSurface final {
+public:
+	LayerSurface() = default;
+	LayerSurface(const LayerSurface &) = delete;
+	LayerSurface &operator=(const LayerSurface &) = delete;
+	~LayerSurface() {
+		destroy();
+	}
+
+	void setOnPointer(Fn<void(PointerEvent)> callback) {
+		_onPointer = std::move(callback);
+	}
+
+	void create() {
+		if (_registry || _layerSurface) {
+			return;
+		}
+		using namespace QNativeInterface;
+		using namespace QNativeInterface::Private;
+		const auto wayland = &Wayland();
+		if (!*wayland) {
+			return;
+		}
+		const auto native = qApp->nativeInterface<QWaylandApplication>();
+		if (!native) {
+			return;
+		}
+		const auto display = native->display();
+		if (!display) {
+			return;
+		}
+		_display = display;
+
+		const auto displayProxy = reinterpret_cast<wl_proxy*>(display);
+		_registry = wayland->proxyMarshalFlags(
+			displayProxy,
+			1,
+			wayland->registryInterface,
+			wayland->proxyGetVersion(displayProxy),
+			0,
+			nullptr);
+		if (!_registry) {
+			return;
+		}
+
+		wayland->proxyAddListener(
+			_registry,
+			reinterpret_cast<void(**)(void)>(&_registryListener),
+			this);
+
+		const auto sync = wayland->proxyMarshalFlags(
+			displayProxy,
+			0, // wl_display_sync
+			&kCallbackInterface,
+			wayland->proxyGetVersion(displayProxy),
+			0,
+			nullptr);
+		if (!sync) {
+			wayland->proxyDestroy(_registry);
+			_registry = nullptr;
+			return;
+		}
+		wayland->proxyAddListener(
+			reinterpret_cast<wl_proxy*>(sync),
+			reinterpret_cast<void(**)(void)>(&_syncListener),
+			this);
+		_syncCallback = sync;
+		wayland->displayFlush(display);
+	}
+
+	void setSize(int width, int height) {
+		_width = width;
+		_height = height;
+		if (!_layerSurface) return;
+		const auto &wayland = Wayland();
+		wayland.proxyMarshalFlags(
+			reinterpret_cast<wl_proxy*>(_layerSurface),
+			2, // set_size
+			nullptr,
+			wayland.proxyGetVersion(reinterpret_cast<wl_proxy*>(_layerSurface)),
+			0,
+			int32_t(width),
+			int32_t(height));
+	}
+
+	void setMargin(int top, int right, int bottom, int left) {
+		if (!_layerSurface) return;
+		const auto &wayland = Wayland();
+		wayland.proxyMarshalFlags(
+			reinterpret_cast<wl_proxy*>(_layerSurface),
+			7, // set_margin
+			nullptr,
+			wayland.proxyGetVersion(reinterpret_cast<wl_proxy*>(_layerSurface)),
+			0,
+			int32_t(top),
+			int32_t(right),
+			int32_t(bottom),
+			int32_t(left));
+	}
+
+	void setAnchor(uint32_t anchor) {
+		if (!_layerSurface) return;
+		const auto &wayland = Wayland();
+		wayland.proxyMarshalFlags(
+			reinterpret_cast<wl_proxy*>(_layerSurface),
+			3, // set_anchor
+			nullptr,
+			wayland.proxyGetVersion(reinterpret_cast<wl_proxy*>(_layerSurface)),
+			0,
+			anchor);
+	}
+
+	void setOnConfigured(Fn<void()> callback) {
+		_onConfigured = std::move(callback);
+	}
+
+	void submit(const QImage &image) {
+		if (!_surface || !_layerSurface) return;
+		const auto &wayland = Wayland();
+		if (!wayland) return;
+		if (!_configureReceived) return;
+
+		_scale = image.devicePixelRatio();
+
+		ackConfigure(wayland);
+
+		const auto size = image.sizeInBytes();
+		const auto stride = image.bytesPerLine();
+		if (size <= 0 || stride <= 0) return;
+
+		const auto fd = memfd_create("telegram-notif-shm", MFD_CLOEXEC);
+		if (fd < 0) return;
+
+		if (ftruncate(fd, size) < 0) {
+			close(fd);
+			return;
+		}
+
+		const auto data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+		if (data == MAP_FAILED) {
+			close(fd);
+			return;
+		}
+
+		const auto pool = wayland.proxyMarshalFlags(
+			reinterpret_cast<wl_proxy*>(_shm),
+			0, // wl_shm.create_pool
+			nullptr,
+			wayland.proxyGetVersion(reinterpret_cast<wl_proxy*>(_shm)),
+			0,
+			int32_t(fd),
+			int32_t(size),
+			nullptr);
+		if (!pool) {
+			munmap(data, size);
+			close(fd);
+			return;
+		}
+
+		const auto buffer = wayland.proxyMarshalFlags(
+			reinterpret_cast<wl_proxy*>(pool),
+			0, // wl_shm_pool.create_buffer
+			nullptr,
+			wayland.proxyGetVersion(reinterpret_cast<wl_proxy*>(pool)),
+			0,
+			int32_t(0),
+			int32_t(image.width()),
+			int32_t(image.height()),
+			int32_t(stride),
+			uint32_t(0), // WL_SHM_FORMAT_ARGB8888
+			nullptr);
+		wayland.proxyDestroy(reinterpret_cast<wl_proxy*>(pool));
+		if (!buffer) {
+			munmap(data, size);
+			close(fd);
+			return;
+		}
+
+		std::memcpy(data, image.constBits(), size);
+		munmap(data, size);
+		close(fd);
+
+		wayland.proxyMarshalFlags(
+			reinterpret_cast<wl_proxy*>(_surface),
+			1, // wl_surface.attach
+			nullptr,
+			wayland.proxyGetVersion(reinterpret_cast<wl_proxy*>(_surface)),
+			0,
+			reinterpret_cast<wl_object*>(buffer),
+			int32_t(0),
+			int32_t(0),
+			nullptr);
+
+		wayland.proxyMarshalFlags(
+			reinterpret_cast<wl_proxy*>(_surface),
+			9, // wl_surface.damage_buffer
+			nullptr,
+			wayland.proxyGetVersion(reinterpret_cast<wl_proxy*>(_surface)),
+			0,
+			int32_t(0),
+			int32_t(0),
+			int32_t(0x7FFFFFFF),
+			int32_t(0x7FFFFFFF),
+			nullptr);
+
+		wayland.proxyDestroy(reinterpret_cast<wl_proxy*>(buffer));
+		commit();
+	}
+
+	void commit() {
+		if (!_surface) return;
+		const auto &wayland = Wayland();
+		wayland.proxyMarshalFlags(
+			reinterpret_cast<wl_proxy*>(_surface),
+			6, // wl_surface.commit
+			nullptr,
+			wayland.proxyGetVersion(reinterpret_cast<wl_proxy*>(_surface)),
+			0);
+		if (_display) {
+			wayland.displayFlush(_display);
+		}
+	}
+
+	void destroy() {
+		const auto &wayland = Wayland();
+		if (wayland) {
+			if (_syncCallback) {
+				wayland.proxyDestroy(
+					reinterpret_cast<wl_proxy*>(_syncCallback));
+			}
+			if (_registry) {
+				wayland.proxyDestroy(_registry);
+			}
+			if (_pointer) {
+				wayland.proxyDestroy(
+					reinterpret_cast<wl_proxy*>(_pointer));
+			}
+			if (_layerSurface) {
+				wayland.proxyDestroy(
+					reinterpret_cast<wl_proxy*>(_layerSurface));
+			}
+			if (_surface) {
+				wayland.proxyDestroy(
+					reinterpret_cast<wl_proxy*>(_surface));
+			}
+			if (_shell) {
+				wayland.proxyDestroy(
+					reinterpret_cast<wl_proxy*>(_shell));
+			}
+			if (_shm) {
+				wayland.proxyDestroy(
+					reinterpret_cast<wl_proxy*>(_shm));
+			}
+			if (_compositor) {
+				wayland.proxyDestroy(
+					reinterpret_cast<wl_proxy*>(_compositor));
+			}
+			if (_seat) {
+				wayland.proxyDestroy(
+					reinterpret_cast<wl_proxy*>(_seat));
+			}
+		}
+		_syncCallback = nullptr;
+		_registry = nullptr;
+		_pointer = nullptr;
+		_layerSurface = nullptr;
+		_surface = nullptr;
+		_shell = nullptr;
+		_shm = nullptr;
+		_compositor = nullptr;
+		_seat = nullptr;
+		_configureSerial = 0;
+		_display = nullptr;
+	}
+
+	[[nodiscard]] bool isValid() const {
+		return _layerSurface != nullptr;
+	}
+
+private:
+	void onRegistryGlobal(
+			uint32_t name,
+			const char *interface,
+			uint32_t) {
+		if (!interface) return;
+		if (!std::strcmp(interface, "wl_compositor")) {
+			_compositorName = name;
+		} else if (!std::strcmp(interface, "wl_shm")) {
+			_shmName = name;
+		} else if (!std::strcmp(interface, "zwlr_layer_shell_v1")) {
+			_shellName = name;
+		} else if (!std::strcmp(interface, "wl_seat")) {
+			_seatName = name;
+		}
+	}
+
+	void onSyncDone() {
+		_syncCallback = nullptr;
+
+		if (!_registry) {
+			return;
+		}
+
+		if (!_compositorName || !_shmName || !_shellName) {
+			destroy();
+			return;
+		}
+
+		const auto &wayland = Wayland();
+		if (!wayland) {
+			destroy();
+			return;
+		}
+
+		const auto bind = [&](uint32_t name, const wl_interface *iface) {
+			return wayland.proxyMarshalFlags(
+				_registry,
+				0, // wl_registry_bind
+				iface,
+				iface->version,
+				0,
+				name,
+				iface->name,
+				iface->version,
+				nullptr);
+		};
+
+		_compositor = bind(_compositorName, &kCompositorInterface);
+		_shm = bind(_shmName, &kShmInterface);
+		_shell = bind(_shellName, &kLayerShellInterface);
+		if (_seatName) {
+			_seat = bind(_seatName, &kSeatInterface);
+		}
+		wayland.proxyDestroy(_registry);
+		_registry = nullptr;
+
+		if (!_compositor || !_shm || !_shell) {
+			destroy();
+			return;
+		}
+
+		_surface = wayland.proxyMarshalFlags(
+			reinterpret_cast<wl_proxy*>(_compositor),
+			0, // wl_compositor.create_surface
+			nullptr,
+			wayland.proxyGetVersion(
+				reinterpret_cast<wl_proxy*>(_compositor)),
+			0,
+			nullptr);
+		if (!_surface) {
+			destroy();
+			return;
+		}
+
+		// The buffer is prepared at the device pixel ratio, so tell the
+		// compositor to scale it back to logical size.
+		wayland.proxyMarshalFlags(
+			reinterpret_cast<wl_proxy*>(_surface),
+			8, // wl_surface.set_buffer_scale
+			nullptr,
+			wayland.proxyGetVersion(
+				reinterpret_cast<wl_proxy*>(_surface)),
+			0,
+			int32_t(style::DevicePixelRatio()));
+
+		_layerSurface = wayland.proxyMarshalFlags(
+			reinterpret_cast<wl_proxy*>(_shell),
+			0, // zwlr_layer_shell_v1.get_layer_surface
+			&kLayerSurfaceInterface,
+			kLayerSurfaceInterface.version,
+			0,
+			_surface,
+			nullptr, // output: all outputs
+			uint32_t(3), // ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY
+			"telegram-notification");
+		if (!_layerSurface) {
+			destroy();
+			return;
+		}
+
+		// Keyboard interactivity: ON_DEMAND (2)
+		wayland.proxyMarshalFlags(
+			reinterpret_cast<wl_proxy*>(_layerSurface),
+			5, // set_keyboard_interactivity
+			nullptr,
+			wayland.proxyGetVersion(
+				reinterpret_cast<wl_proxy*>(_layerSurface)),
+			0,
+			uint32_t(2));
+
+		// Placeholder anchor until the widget applies the configured
+		// corner; no content is attached yet, so nothing is visible.
+		wayland.proxyMarshalFlags(
+			reinterpret_cast<wl_proxy*>(_layerSurface),
+			3, // set_anchor
+			nullptr,
+			wayland.proxyGetVersion(
+				reinterpret_cast<wl_proxy*>(_layerSurface)),
+			0,
+			uint32_t(0));
+
+		// Exclusive zone: 0 (don't reserve space)
+		wayland.proxyMarshalFlags(
+			reinterpret_cast<wl_proxy*>(_layerSurface),
+			4, // set_exclusive_zone
+			nullptr,
+			wayland.proxyGetVersion(
+				reinterpret_cast<wl_proxy*>(_layerSurface)),
+			0,
+			int32_t(0));
+
+		// Listen for configure events
+		struct LSListener {
+			void (*configure)(
+				void*,
+				void*,
+				uint32_t,
+				uint32_t,
+				uint32_t);
+		};
+		auto lsListener = LSListener{
+			[](void *data, void *, uint32_t serial, uint32_t, uint32_t) {
+				static_cast<LayerSurface*>(data)->onConfigure(serial);
+			},
+		};
+		wayland.proxyAddListener(
+			reinterpret_cast<wl_proxy*>(_layerSurface),
+			reinterpret_cast<void(**)(void)>(&lsListener),
+			this);
+
+		// Listen for seat capabilities (for pointer)
+		if (_seat) {
+			auto seatListener = wl_seat_listener{
+				[](void *data, struct wl_seat *, uint32_t caps) {
+					static_cast<LayerSurface*>(data)->onSeatCapabilities(
+						caps);
+				},
+				[](void *, struct wl_seat *, const char *) {},
+			};
+			wayland.proxyAddListener(
+				reinterpret_cast<wl_proxy*>(_seat),
+				reinterpret_cast<void(**)(void)>(&seatListener),
+				this);
+		}
+
+		commit();
+	}
+
+	void onConfigure(uint32_t serial) {
+		_configureSerial = serial;
+		if (!_configureReceived) {
+			_configureReceived = true;
+			if (_onConfigured) {
+				_onConfigured();
+			}
+		}
+	}
+
+	void onSeatCapabilities(uint32_t capabilities) {
+		// ponytail: only handle pointer (bit 1), skip keyboard/touch
+		if (!(capabilities & 1) || _pointer) return;
+		const auto &wayland = Wayland();
+		if (!wayland || !_seat) return;
+
+		_pointer = wayland.proxyMarshalFlags(
+			reinterpret_cast<wl_proxy*>(_seat),
+			0, // wl_seat.get_pointer
+			&kPointerInterface,
+			kPointerInterface.version,
+			0,
+			nullptr);
+		if (!_pointer) return;
+
+		auto pointerListener = wl_pointer_listener{
+			[](void *data, struct wl_pointer *, uint32_t,
+				struct wl_surface *, wl_fixed_t x, wl_fixed_t y) {
+				auto self = static_cast<LayerSurface*>(data);
+				if (self->_onPointer) {
+					self->_onPointer(PointerEvent{
+						.type = PointerEvent::Type::Enter,
+						.position = self->surfaceToWidget(x, y),
+					});
+				}
+			},
+			[](void *data, struct wl_pointer *, uint32_t,
+				struct wl_surface *) {
+				auto self = static_cast<LayerSurface*>(data);
+				if (self->_onPointer) {
+					self->_onPointer(PointerEvent{
+						.type = PointerEvent::Type::Leave,
+					});
+				}
+			},
+			[](void *data, struct wl_pointer *, uint32_t,
+				wl_fixed_t x, wl_fixed_t y) {
+				auto self = static_cast<LayerSurface*>(data);
+				if (self->_onPointer) {
+					self->_onPointer(PointerEvent{
+						.type = PointerEvent::Type::Move,
+						.position = self->surfaceToWidget(x, y),
+					});
+				}
+			},
+			[](void *data, struct wl_pointer *, uint32_t,
+				uint32_t, uint32_t button, uint32_t state) {
+				auto self = static_cast<LayerSurface*>(data);
+				if (!self->_onPointer) {
+					return;
+				}
+				const auto mapped = [&]() -> Qt::MouseButton {
+					switch (button) {
+					case 0x110: return Qt::LeftButton;
+					case 0x111: return Qt::RightButton;
+					case 0x112: return Qt::MiddleButton;
+					}
+					return Qt::NoButton;
+				}();
+				if (mapped != Qt::NoButton) {
+					self->_onPointer(PointerEvent{
+						.type = (state == 1)
+							? PointerEvent::Type::Press
+							: PointerEvent::Type::Release,
+						.button = mapped,
+					});
+				}
+			},
+			[](void *, struct wl_pointer *, uint32_t, uint32_t, wl_fixed_t) {
+			},
+		};
+		wayland.proxyAddListener(
+			reinterpret_cast<wl_proxy*>(_pointer),
+			reinterpret_cast<void(**)(void)>(&pointerListener),
+			this);
+		if (_display) {
+			wayland.displayFlush(_display);
+		}
+	}
+
+	void ackConfigure(const WaylandSymbols &wayland) {
+		if (!_configureSerial || !_layerSurface) return;
+		wayland.proxyMarshalFlags(
+			reinterpret_cast<wl_proxy*>(_layerSurface),
+			0, // ack_configure
+			nullptr,
+			wayland.proxyGetVersion(
+				reinterpret_cast<wl_proxy*>(_layerSurface)),
+			0,
+			_configureSerial);
+		_configureSerial = 0;
+	}
+
+	wl_display *_display = nullptr;
+	wl_proxy *_registry = nullptr;
+	wl_proxy *_syncCallback = nullptr;
+
+	uint32_t _compositorName = 0;
+	uint32_t _shmName = 0;
+	uint32_t _shellName = 0;
+	uint32_t _seatName = 0;
+
+	void *_compositor = nullptr;
+	void *_shm = nullptr;
+	void *_shell = nullptr;
+	void *_surface = nullptr;
+	void *_layerSurface = nullptr;
+	void *_seat = nullptr;
+	void *_pointer = nullptr;
+	uint32_t _configureSerial = 0;
+	bool _configureReceived = false;
+	int _width = 0;
+	int _height = 0;
+	float64 _scale = 1.;
+	Fn<void(PointerEvent)> _onPointer;
+	Fn<void()> _onConfigured;
+
+	[[nodiscard]] QPoint surfaceToWidget(
+			wl_fixed_t x,
+			wl_fixed_t y) const {
+		const auto scale = (_scale > 0.) ? _scale : 1.;
+		return QPoint(
+			int(x / 256. / scale),
+			int(y / 256. / scale));
+	}
+
+	static inline auto _registryListener = wl_registry_listener{
+		[](void *data, struct wl_registry *, uint32_t name,
+			const char *interface, uint32_t version) {
+			static_cast<LayerSurface*>(data)->onRegistryGlobal(
+				name,
+				interface,
+				version);
+		},
+		[](void *, struct wl_registry *, uint32_t) {
+		},
+	};
+
+	static inline auto _syncListener = wl_callback_listener{
+		[](void *data, struct wl_callback *, uint32_t) {
+			static_cast<LayerSurface*>(data)->onSyncDone();
+		},
+	};
+
+};
+
+} // namespace WaylandNotifLayer
+#endif // wayland
 
 namespace Window {
 namespace Notifications {
+
+[[nodiscard]] bool HasLayerShell() {
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	static auto cached = false;
+	static bool known = false;
+	if (known) {
+		return cached;
+	}
+
+	const auto &wayland = WaylandNotifLayer::Wayland();
+	if (!wayland) {
+		known = true;
+		return false;
+	}
+	using namespace QNativeInterface;
+	using namespace QNativeInterface::Private;
+	const auto native = qApp->nativeInterface<QWaylandApplication>();
+	if (!native) {
+		known = true;
+		return false;
+	}
+	const auto display = native->display();
+	if (!display) {
+		known = true;
+		return false;
+	}
+
+	struct State {
+		bool found = false;
+		bool done = false;
+	} state;
+
+	const auto displayProxy = reinterpret_cast<wl_proxy*>(display);
+	const auto registry = reinterpret_cast<wl_proxy*>(
+		wayland.proxyMarshalFlags(
+			displayProxy,
+			1,
+			wayland.registryInterface,
+			wayland.proxyGetVersion(displayProxy),
+			0,
+			nullptr));
+	if (!registry) {
+		known = true;
+		return false;
+	}
+
+	auto listener = wl_registry_listener{
+		[](void *data, struct wl_registry *, uint32_t,
+			const char *interface, uint32_t) {
+			if (interface
+				&& !std::strcmp(interface, "zwlr_layer_shell_v1")) {
+				static_cast<State*>(data)->found = true;
+			}
+		},
+		[](void *, struct wl_registry *, uint32_t) {
+		},
+	};
+	wayland.proxyAddListener(
+		registry,
+		reinterpret_cast<void(**)(void)>(&listener),
+		&state);
+
+	const auto sync = wayland.proxyMarshalFlags(
+		displayProxy,
+		0, // wl_display_sync
+		&WaylandNotifLayer::kCallbackInterface,
+		wayland.proxyGetVersion(displayProxy),
+		0,
+		nullptr);
+	if (!sync) {
+		wayland.proxyDestroy(registry);
+		known = true;
+		return false;
+	}
+
+	auto syncListener = wl_callback_listener{
+		[](void *data, struct wl_callback *, uint32_t) {
+			static_cast<State*>(data)->done = true;
+		},
+	};
+	wayland.proxyAddListener(
+		reinterpret_cast<wl_proxy*>(sync),
+		reinterpret_cast<void(**)(void)>(&syncListener),
+		&state);
+
+	// Push the registry + sync requests to the socket immediately.
+	// Qt flushes lazily (inside its readEvents), so without this the
+	// probe would sit in our buffer until some unrelated event arrives
+	// and the 500 ms timeout would fire first.
+	wayland.displayFlush(display);
+
+	// Process events through Qt's event loop until sync callback fires.
+	// No direct socket I/O — dispatch happens via Qt's QSocketNotifier.
+	{
+		auto loop = QEventLoop();
+		auto timer = QTimer(&loop);
+		timer.setSingleShot(true);
+		QObject::connect(
+			&timer,
+			&QTimer::timeout,
+			&loop,
+			&QEventLoop::quit);
+		timer.start(500);
+
+		while (!state.done && timer.isActive()) {
+			loop.processEvents(QEventLoop::AllEvents, 50);
+		}
+	}
+
+	wayland.proxyDestroy(reinterpret_cast<wl_proxy*>(sync));
+	wayland.proxyDestroy(registry);
+
+	if (state.done) {
+		LOG(("Wayland layer shell detection: %1")
+			.arg(state.found ? "available" : "not available"));
+		cached = state.found;
+		known = true;
+	}
+	return state.found;
+#else
+	return false;
+#endif
+}
+
 namespace Default {
 namespace {
 
@@ -505,12 +1489,30 @@ Widget::Widget(
 
 	Ui::Platform::InitOnTopPanel(this);
 
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	if (HasLayerShell()) {
+		_layerSurface = std::make_unique<WaylandNotifLayer::LayerSurface>();
+		_layerSurface->setOnPointer(
+			[this](const WaylandNotifLayer::PointerEvent &event) {
+				handleLayerPointer(event);
+			});
+		// Submit the first frame once the compositor has configured the
+		// surface; before that submit() is a no-op and the fade frames
+		// of a fresh notification would be lost.
+		_layerSurface->setOnConfigured([this] { submitLayerFrame(); });
+		InvokeQueued(this, [=] { ensureLayerSurface(); });
+	}
+#endif
+
 	_a_opacity.start([this] { opacityAnimationCallback(); }, 0., 1., st::notifyFastAnim);
 }
 
 void Widget::opacityAnimationCallback() {
 	updateOpacity();
 	update();
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	submitLayerFrame();
+#endif
 	if (!_a_opacity.animating() && _hiding) {
 		if (underMouse()) {
 			// The notification is leaving from under the cursor, but in such case leave hook is not
@@ -534,6 +1536,9 @@ bool Widget::shiftAnimationCallback(crl::time now) {
 		_shift.update(dt, anim::linear);
 	}
 	moveByShift();
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	submitLayerFrame();
+#endif
 	return (dt < 1.);
 }
 
@@ -575,6 +1580,11 @@ void Widget::hideAnimated(float64 duration, const anim::transition &func) {
 }
 
 void Widget::updateOpacity() {
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	if (_layerSurface && _layerSurface->isValid()) {
+		return;
+	}
+#endif
 	setWindowOpacity(_a_opacity.value(_hiding ? 0. : 1.) * _manager->demoMasterOpacity());
 }
 
@@ -600,6 +1610,12 @@ void Widget::updateGeometry(int x, int y, int width, int height) {
 	move(x, y);
 	setFixedSize(width, height);
 	update();
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	if (_layerSurface && _layerSurface->isValid()) {
+		updateLayerGeometry();
+		submitLayerFrame();
+	}
+#endif
 }
 
 void Widget::addToShift(int add) {
@@ -608,7 +1624,11 @@ void Widget::addToShift(int add) {
 }
 
 void Widget::moveByShift() {
-	move(computePosition(height()));
+	const auto pos = computePosition(height());
+	move(pos);
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	applyLayerPosition(pos);
+#endif
 }
 
 QPoint Widget::computePosition(int height) const {
@@ -618,6 +1638,199 @@ QPoint Widget::computePosition(int height) const {
 	}
 	return QPoint(_startPosition.x(), _startPosition.y() + realShift);
 }
+
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+void Widget::ensureLayerSurface() {
+	if (!_layerSurface || _layerSurface->isValid()) {
+		return;
+	}
+	_layerSurface->create();
+	if (_layerSurface->isValid()) {
+		hide();
+		updateLayerGeometry();
+		submitLayerFrame();
+	}
+}
+
+void Widget::updateLayerGeometry() {
+	const auto ratio = style::DevicePixelRatio();
+	const auto pos = computePosition(height());
+	_layerSurface->setSize(int(width() * ratio), int(height() * ratio));
+	applyLayerPosition(pos);
+}
+
+void Widget::applyLayerPosition(const QPoint &pos) {
+	if (!_layerSurface || !_layerSurface->isValid()) {
+		return;
+	}
+	// The surface is positioned relative to the configured corner by the
+	// anchor bitfield (top/bottom/left/right), with margins as distances
+	// from those edges. Anchor NONE would center the surface instead.
+	const auto corner = Core::App().settings().notificationsCorner();
+	const auto isLeft = Core::Settings::IsLeftCorner(corner);
+	const auto isTop = Core::Settings::IsTopCorner(corner);
+	const auto leftSide = (isLeft != rtl());
+	const auto r = NotificationDisplayRect(Core::App().activePrimaryWindow());
+	const auto anchor = (isTop ? 1 : 2) | (leftSide ? 4 : 8);
+	const auto topMargin = isTop ? (pos.y() - r.y()) : 0;
+	const auto bottomMargin = isTop
+		? 0
+		: (r.y() + r.height() - (pos.y() + height()));
+	const auto leftMargin = leftSide ? (pos.x() - r.x()) : 0;
+	const auto rightMargin = leftSide
+		? 0
+		: (r.x() + r.width() - (pos.x() + width()));
+	_layerSurface->setAnchor(anchor);
+	_layerSurface->setMargin(topMargin, rightMargin, bottomMargin, leftMargin);
+}
+
+void Widget::submitLayerFrame() {
+	if (!_layerSurface || !_layerSurface->isValid()) {
+		return;
+	}
+	if (isVisible()) {
+		hide();
+	}
+
+	const auto ratio = style::DevicePixelRatio();
+	const auto imageSize = QSize(width(), height()) * ratio;
+	auto image = QImage(imageSize, QImage::Format_ARGB32_Premultiplied);
+	image.setDevicePixelRatio(ratio);
+	image.fill(Qt::transparent);
+	render(&image);
+
+	const auto opacity = _a_opacity.value(_hiding ? 0. : 1.)
+		* _manager->demoMasterOpacity();
+	if (opacity < 1.) {
+		auto painter = QPainter(&image);
+		painter.setCompositionMode(
+			QPainter::CompositionMode_DestinationIn);
+		painter.fillRect(
+			image.rect(),
+			QColor(0, 0, 0, int(opacity * 255)));
+		painter.end();
+		// wl_shm has only straight-alpha formats (ARGB8888), so the
+		// premultiplied fade frame must be unpremultiplied before the copy.
+		image = image.convertToFormat(QImage::Format_ARGB32);
+	}
+
+	_layerSurface->submit(image);
+}
+
+void Widget::handleLayerPointer(const WaylandNotifLayer::PointerEvent &event) {
+	if (!_layerSurface || !_layerSurface->isValid()) {
+		return;
+	}
+	using Type = WaylandNotifLayer::PointerEvent::Type;
+	auto reRender = false;
+	switch (event.type) {
+	case Type::Enter: {
+		_layerPointerPosition = event.position;
+		enterLayerWidget();
+		reRender = true;
+	} break;
+	case Type::Leave: {
+		_layerPointerPosition = event.position;
+		leaveLayerWidget();
+		_layerPressed = nullptr;
+		_layerButtonsState = {};
+		reRender = true;
+	} break;
+	case Type::Move: {
+		_layerPointerPosition = event.position;
+	} break;
+	case Type::Press: {
+		_layerPointerPosition = event.position;
+		_layerButtonsState |= event.button;
+		pressLayerButton(event.button);
+		reRender = true;
+	} break;
+	case Type::Release: {
+		_layerPointerPosition = event.position;
+		releaseLayerButton(event.button);
+		_layerButtonsState &= ~event.button;
+		reRender = true;
+	} break;
+	}
+	if (reRender) {
+		submitLayerFrame();
+	}
+}
+
+void Widget::enterLayerWidget() {
+	const auto global = mapToGlobal(_layerPointerPosition);
+	QEnterEvent enter(
+		_layerPointerPosition,
+		_layerPointerPosition,
+		global);
+	QCoreApplication::sendEvent(this, &enter);
+}
+
+void Widget::leaveLayerWidget() {
+	QEvent leave(QEvent::Leave);
+	QCoreApplication::sendEvent(this, &leave);
+}
+
+QWidget *Widget::layerChildAt(QWidget *root, QPoint position) const {
+	for (auto i = root->children().rbegin();
+			i != root->children().rend(); ++i) {
+		const auto child = qobject_cast<QWidget*>(*i);
+		if (!child
+			|| child->isHidden()
+			|| !child->geometry().contains(position)) {
+			continue;
+		}
+		const auto local = position - child->pos();
+		if (const auto inner = layerChildAt(child, local)) {
+			return inner;
+		}
+		return child;
+	}
+	return nullptr;
+}
+
+QWidget *Widget::layerChildAt(const QPoint &position) const {
+	return layerChildAt(const_cast<Widget*>(this), position);
+}
+
+void Widget::sendLayerMouse(
+		QEvent::Type type,
+		Qt::MouseButton button,
+		QWidget *target) {
+	auto local = _layerPointerPosition;
+	for (auto widget = target; widget && widget != this;) {
+		local -= widget->pos();
+		widget = widget->parentWidget();
+	}
+	const auto global = mapToGlobal(_layerPointerPosition);
+	QMouseEvent event(
+		type,
+		local,
+		local,
+		global,
+		button,
+		_layerButtonsState,
+		{});
+	QCoreApplication::sendEvent(target, &event);
+}
+
+void Widget::pressLayerButton(Qt::MouseButton button) {
+	const auto child = layerChildAt(_layerPointerPosition);
+	const auto target = child ? child : this;
+	_layerPressed = target;
+	sendLayerMouse(QEvent::MouseButtonPress, button, target);
+}
+
+void Widget::releaseLayerButton(Qt::MouseButton button) {
+	const auto target = _layerPressed ? _layerPressed : this;
+	_layerPressed = nullptr;
+	sendLayerMouse(QEvent::MouseButtonRelease, button, target);
+}
+
+bool Widget::layerSurfaceActive() const {
+	return _layerSurface && _layerSurface->isValid();
+}
+#endif
 
 Background::Background(QWidget *parent) : RpWidget(parent) {
 	setAttribute(Qt::WA_OpaquePaintEvent);
@@ -714,6 +1927,12 @@ Notification::Notification(
 	}, lifetime());
 
 	show();
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	if (_layerSurface) {
+		ensureLayerSurface();
+		submitLayerFrame();
+	}
+#endif
 }
 
 void Notification::updateReplyGeometry() {
@@ -804,6 +2023,11 @@ void Notification::paintEvent(QPaintEvent *e) {
 
 void Notification::actionsOpacityCallback() {
 	update();
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	if (layerSurfaceActive()) {
+		submitLayerFrame();
+	}
+#endif
 	if (!a_actionsOpacity.animating() && _actionsVisible) {
 		_reply->show();
 	}
@@ -1058,6 +2282,11 @@ void Notification::updatePeerPhoto() {
 		st::notifyPhotoSize);
 	_userpicView = {};
 	update();
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	if (layerSurfaceActive()) {
+		submitLayerFrame();
+	}
+#endif
 }
 
 bool Notification::unlinkItem(HistoryItem *deleted) {
@@ -1094,8 +2323,15 @@ void Notification::showReplyField() {
 	if (!_item) {
 		return;
 	}
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	if (!layerSurfaceActive()) {
+		raise();
+		activateWindow();
+	}
+#else
 	raise();
 	activateWindow();
+#endif
 
 	if (_replyArea) {
 		_replyArea->setFocus();
@@ -1240,6 +2476,11 @@ bool Notification::eventFilter(QObject *o, QEvent *e) {
 	if (e->type() == QEvent::MouseButtonPress) {
 		if (auto receiver = qobject_cast<QWidget*>(o)) {
 			if (isAncestorOf(receiver)) {
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+				if (layerSurfaceActive()) {
+					return false;
+				}
+#endif
 				raise();
 				activateWindow();
 			}
@@ -1271,6 +2512,12 @@ HideAllButton::HideAllButton(
 	}, lifetime());
 
 	show();
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	if (_layerSurface) {
+		ensureLayerSurface();
+		submitLayerFrame();
+	}
+#endif
 }
 
 void HideAllButton::startHiding() {

@@ -7,6 +7,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+namespace WaylandNotifLayer {
+class LayerSurface;
+struct PointerEvent;
+} // namespace WaylandNotifLayer
+#endif
+
 #include "window/notifications_manager.h"
 #include "ui/effects/animations.h"
 #include "ui/text/text.h"
@@ -171,7 +178,7 @@ protected:
 		return _manager;
 	}
 
-private:
+protected:
 	void opacityAnimationCallback();
 	void moveByShift();
 	void hideAnimated(float64 duration, const anim::transition &func);
@@ -187,6 +194,30 @@ private:
 	Direction _direction;
 	anim::value _shift;
 	Ui::Animations::Basic _shiftAnimation;
+
+#if defined QT_FEATURE_wayland && QT_CONFIG(wayland)
+	std::unique_ptr<WaylandNotifLayer::LayerSurface> _layerSurface;
+	void ensureLayerSurface();
+	void submitLayerFrame();
+	void handleLayerPointer(const WaylandNotifLayer::PointerEvent &event);
+	QWidget *layerChildAt(const QPoint &position) const;
+	QWidget *layerChildAt(QWidget *root, QPoint position) const;
+	void enterLayerWidget();
+	void leaveLayerWidget();
+	void pressLayerButton(Qt::MouseButton button);
+	void releaseLayerButton(Qt::MouseButton button);
+	void sendLayerMouse(
+		QEvent::Type type,
+		Qt::MouseButton button,
+		QWidget *target);
+	void updateLayerGeometry();
+	void applyLayerPosition(QPoint pos);
+	[[nodiscard]] bool layerSurfaceActive() const;
+
+	QPoint _layerPointerPosition;
+	QWidget *_layerPressed = nullptr;
+	Qt::MouseButtons _layerButtonsState = {};
+#endif
 
 };
 
