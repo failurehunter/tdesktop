@@ -73,6 +73,7 @@ struct wl_shm;
 struct wl_shm_pool;
 struct wl_buffer;
 struct wl_callback;
+struct wl_output;
 struct zwlr_layer_shell_v1;
 struct zwlr_layer_surface_v1;
 
@@ -343,10 +344,11 @@ public:
 		_onPointer = std::move(callback);
 	}
 
-	void create() {
+	void create(wl_output *output) {
 		if (_registry || _layerSurface) {
 			return;
 		}
+		_output = output;
 		using namespace QNativeInterface;
 		using namespace QNativeInterface::Private;
 		const auto wayland = &Wayland();
@@ -701,7 +703,7 @@ private:
 			kLayerSurfaceInterface.version,
 			0,
 			_surface,
-			nullptr, // output: all outputs
+			_output, // the output the notification will appear on
 			uint32_t(3), // ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY
 			"telegram-notification");
 		if (!_layerSurface) {
@@ -883,6 +885,7 @@ private:
 	wl_display *_display = nullptr;
 	wl_proxy *_registry = nullptr;
 	wl_proxy *_syncCallback = nullptr;
+	wl_output *_output = nullptr;
 
 	uint32_t _compositorName = 0;
 	uint32_t _shmName = 0;
@@ -1527,10 +1530,22 @@ Widget::Widget(
 			[this](const WaylandNotifLayer::PointerEvent &event) {
 				handleLayerPointer(event);
 			});
-		// Submit the first frame once the compositor has configured the
-		// surface; before that submit() is a no-op and the fade frames
-		// of a fresh notification would be lost.
-		_layerSurface->setOnConfigured([this] { submitLayerFrame(); });
+		// The surface creation is fully async, so the geometry pass and
+		// the first fade frames are lost before the compositor's
+		// configure event arrives. Apply the geometry and restart the
+		// fade-in here, on the first frame that can actually be shown.
+		_layerSurface->setOnConfigured([this] {
+			if (!_hiding) {
+				updateLayerGeometry();
+				_a_opacity.stop();
+				_a_opacity.start(
+					[this] { opacityAnimationCallback(); },
+					0.,
+					1.,
+					st::notifyFastAnim);
+			}
+			submitLayerFrame();
+		});
 		InvokeQueued(this, [=] { ensureLayerSurface(); });
 	}
 #endif
@@ -1675,7 +1690,14 @@ void Widget::ensureLayerSurface() {
 	if (!_layerSurface || _layerSurface->isValid()) {
 		return;
 	}
-	_layerSurface->create();
+	// Anchor the surface to the output the notification will appear on.
+	// With a null output the compositor picks a focused one, which can
+	// differ from the target screen on a multi-monitor setup.
+	const auto screen = QGuiApplication::screenAt(_startPosition);
+	const auto native = screen
+		? screen->nativeInterface<QNativeInterface::QWaylandScreen>()
+		: nullptr;
+	_layerSurface->create(native ? native->output() : nullptr);
 	if (_layerSurface->isValid()) {
 		hide();
 		updateLayerGeometry();
@@ -1684,9 +1706,10 @@ void Widget::ensureLayerSurface() {
 }
 
 void Widget::updateLayerGeometry() {
-	const auto ratio = style::DevicePixelRatio();
 	const auto pos = computePosition(height());
-	_layerSurface->setSize(int(width() * ratio), int(height() * ratio));
+	// set_size is in surface-local (logical) coordinates; the buffer is
+	// scaled back by wl_surface.set_buffer_scale.
+	_layerSurface->setSize(width(), height());
 	applyLayerPosition(pos);
 }
 
@@ -1702,15 +1725,19 @@ void Widget::applyLayerPosition(QPoint pos) {
 	const auto isTop = Core::Settings::IsTopCorner(corner);
 	const auto leftSide = (isLeft != rtl());
 	const auto r = NotificationDisplayRect(Core::App().activePrimaryWindow());
+	// Margins are measured from the edges of the full output, not the
+	// work area, so the panel height ends up in the margin itself.
+	const auto screen = QGuiApplication::screenAt(pos);
+	const auto output = screen ? screen->geometry() : r;
 	const auto anchor = (isTop ? 1 : 2) | (leftSide ? 4 : 8);
-	const auto topMargin = isTop ? (pos.y() - r.y()) : 0;
+	const auto topMargin = isTop ? (pos.y() - output.y()) : 0;
 	const auto bottomMargin = isTop
 		? 0
-		: (r.y() + r.height() - (pos.y() + height()));
-	const auto leftMargin = leftSide ? (pos.x() - r.x()) : 0;
+		: (output.y() + output.height() - (pos.y() + height()));
+	const auto leftMargin = leftSide ? (pos.x() - output.x()) : 0;
 	const auto rightMargin = leftSide
 		? 0
-		: (r.x() + r.width() - (pos.x() + width()));
+		: (output.x() + output.width() - (pos.x() + width()));
 	_layerSurface->setAnchor(anchor);
 	_layerSurface->setMargin(topMargin, rightMargin, bottomMargin, leftMargin);
 }
@@ -1732,18 +1759,31 @@ void Widget::submitLayerFrame() {
 
 	const auto opacity = _a_opacity.value(_hiding ? 0. : 1.)
 		* _manager->demoMasterOpacity();
-	if (opacity < 1.) {
+	if (opacity < 1. || st::notifyRadius > 0) {
 		auto painter = QPainter(&image);
-		painter.setCompositionMode(
-			QPainter::CompositionMode_DestinationIn);
-		painter.fillRect(
-			image.rect(),
-			QColor(0, 0, 0, int(opacity * 255)));
+		if (opacity < 1.) {
+			painter.setCompositionMode(
+				QPainter::CompositionMode_DestinationIn);
+			painter.fillRect(
+				image.rect(),
+				QColor(0, 0, 0, int(opacity * 255)));
+		}
+		if (st::notifyRadius > 0) {
+			painter.setRenderHint(QPainter::Antialiasing);
+			painter.setCompositionMode(
+				QPainter::CompositionMode_DestinationIn);
+			painter.setPen(Qt::NoPen);
+			painter.setBrush(Qt::black);
+			painter.drawRoundedRect(
+				image.rect(),
+				st::notifyRadius * ratio,
+				st::notifyRadius * ratio);
+		}
 		painter.end();
-		// wl_shm has only straight-alpha formats (ARGB8888), so the
-		// premultiplied fade frame must be unpremultiplied before the copy.
-		image = image.convertToFormat(QImage::Format_ARGB32);
 	}
+	// wl_shm has only straight-alpha formats (ARGB8888), so
+	// premultiplied pixels must be unpremultiplied before the copy.
+	image = image.convertToFormat(QImage::Format_ARGB32);
 
 	_layerSurface->submit(image);
 }
