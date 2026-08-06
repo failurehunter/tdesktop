@@ -201,44 +201,6 @@ const auto kShmPoolInterface = wl_interface{
 	nullptr,
 };
 
-const auto kSurfaceRequests = std::array{
-	wl_message{ "destroy", "", nullptr },
-	wl_message{ "attach", "oii", nullptr },
-	wl_message{ "damage", "iiii", nullptr },
-	wl_message{ "frame", "n", nullptr },
-	wl_message{ "set_opaque_region", "?o", nullptr },
-	wl_message{ "set_input_region", "?o", nullptr },
-	wl_message{ "commit", "", nullptr },
-	wl_message{ "set_buffer_transform", "i", nullptr },
-	wl_message{ "set_buffer_scale", "i", nullptr },
-	wl_message{ "damage_buffer", "iiii", nullptr },
-	wl_message{ "offset", "ii", nullptr },
-	wl_message{ "set_buffer_release", "i", nullptr },
-};
-const auto kSurfaceInterface = wl_interface{
-	"wl_surface",
-	6,
-	int(kSurfaceRequests.size()),
-	kSurfaceRequests.data(),
-	0,
-	nullptr,
-};
-
-const auto kBufferRequests = std::array{
-	wl_message{ "destroy", "", nullptr },
-};
-const auto kBufferReleaseEvents = std::array{
-	wl_message{ "release", "", nullptr },
-};
-const auto kBufferInterface = wl_interface{
-	"wl_buffer",
-	1,
-	int(kBufferRequests.size()),
-	kBufferRequests.data(),
-	int(kBufferReleaseEvents.size()),
-	kBufferReleaseEvents.data(),
-};
-
 const auto kCompositorCreateSurfaceMessage = wl_message{ "create_surface", "n", nullptr };
 const auto kCompositorInterface = wl_interface{
 	"wl_compositor",
@@ -264,7 +226,7 @@ const auto kSeatInterface = wl_interface{
 
 const auto kPointerEvents = std::array{
 	wl_message{ "enter", "uoff", nullptr },
-	wl_message{ "leave", "uo", nullptr },
+	wl_message{ "leave", "uou", nullptr },
 	wl_message{ "motion", "uff", nullptr },
 	wl_message{ "button", "uuuu", nullptr },
 	wl_message{ "axis", "uuf", nullptr },
@@ -477,8 +439,8 @@ public:
 		const auto pool = wayland.proxyMarshalFlags(
 			reinterpret_cast<wl_proxy*>(_shm),
 			0, // wl_shm.create_pool
-			&kShmPoolInterface,
-			kShmPoolInterface.version,
+			nullptr,
+			wayland.proxyGetVersion(reinterpret_cast<wl_proxy*>(_shm)),
 			0,
 			int32_t(fd),
 			int32_t(size),
@@ -492,8 +454,8 @@ public:
 		const auto buffer = wayland.proxyMarshalFlags(
 			reinterpret_cast<wl_proxy*>(pool),
 			0, // wl_shm_pool.create_buffer
-			&kBufferInterface,
-			kBufferInterface.version,
+			nullptr,
+			wayland.proxyGetVersion(reinterpret_cast<wl_proxy*>(pool)),
 			0,
 			int32_t(0),
 			int32_t(image.width()),
@@ -674,8 +636,9 @@ private:
 		_surface = wayland.proxyMarshalFlags(
 			reinterpret_cast<wl_proxy*>(_compositor),
 			0, // wl_compositor.create_surface
-			&kSurfaceInterface,
-			kSurfaceInterface.version,
+			nullptr,
+			wayland.proxyGetVersion(
+				reinterpret_cast<wl_proxy*>(_compositor)),
 			0,
 			nullptr);
 		if (!_surface) {
