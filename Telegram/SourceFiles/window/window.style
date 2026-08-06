@@ -27,7 +27,6 @@ adaptiveChatWideWidth: 880px;
 
 notifyBorder: windowShadowFgFallback;
 notifyBorderWidth: 1px;
-notifyRadius: 10px;
 notifySlowHide: 4000;
 notifyPhotoSize: 62px;
 notifyMacPhotoSize: 64px;
