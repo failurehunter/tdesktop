@@ -200,31 +200,18 @@ bool WaitForInputForCustom() {
 }
 
 bool Supported() {
-	// With a layer shell the app renders custom notifications itself,
-	// so native ones are not offered even if a DBus daemon or
-	// GNotification is present.
-	if (IsWayland() && Window::Notifications::HasLayerShell()) {
-		return false;
-	}
 	return ServiceRegistered || UseGNotification();
 }
 
 bool Enforced() {
-	// With a layer shell the app renders custom notifications itself,
-	// so native ones are not enforced even if GNotification is enabled.
-	if (IsWayland() && Window::Notifications::HasLayerShell()) {
-		return false;
-	}
+	// Wayland doesn't support positioning
+	// and custom notifications don't work here
 	return IsWayland()
 		|| (Gio::Application::get_default()
 			&& Window::Notifications::OptionGNotification.value());
 }
 
 bool ByDefault() {
-	if (IsWayland() && Window::Notifications::HasLayerShell()) {
-		return false;
-	}
-
 	// The capabilities are static, equivalent to 'body' and 'actions' only
 	if (UseGNotification()) {
 		return false;

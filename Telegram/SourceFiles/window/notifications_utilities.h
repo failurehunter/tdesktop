@@ -16,8 +16,6 @@ struct PeerUserpicView;
 
 namespace Window::Notifications {
 
-[[nodiscard]] bool HasLayerShell();
-
 [[nodiscard]] QImage GenerateUserpic(
 	not_null<PeerData*> peer,
 	Ui::PeerUserpicView &view);
