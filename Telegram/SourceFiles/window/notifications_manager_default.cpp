@@ -36,6 +36,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history.h"
 #include "history/history_item.h"
 #include "history/view/history_view_item_preview.h"
+#include "base/platform/base_platform_info.h"
 #include "base/platform/base_platform_last_input.h"
 #include "base/call_delayed.h"
 #include "styles/style_dialogs.h"
@@ -44,6 +45,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtGui/QGuiApplication>
 #include <QtGui/QScreen>
+#include <QtGui/QShowEvent>
+#include <QGraphicsOpacityEffect>
+
+#ifdef Q_OS_LINUX
+#include <LayerShellQt/window.h>
+#endif // Q_OS_LINUX
 
 namespace Window {
 namespace Notifications {
@@ -65,6 +72,10 @@ namespace {
 internal::Widget::Direction notificationShiftDirection() {
 	auto isTop = Core::Settings::IsTopCorner(Core::App().settings().notificationsCorner());
 	return isTop ? internal::Widget::Direction::Down : internal::Widget::Direction::Up;
+}
+
+[[nodiscard]] bool LayerShellEnabled() {
+	return Platform::IsWayland() && HasLayerShell();
 }
 
 } // namespace
@@ -493,7 +504,16 @@ Widget::Widget(
 , _shiftAnimation([=](crl::time now) {
 	return shiftAnimationCallback(now);
 }) {
-	setWindowOpacity(0.);
+	const auto layerShell = LayerShellEnabled();
+	if (layerShell) {
+		setAttribute(Qt::WA_NativeWindow);
+		setAttribute(Qt::WA_TranslucentBackground);
+		_opacityEffect = new QGraphicsOpacityEffect(this);
+		setGraphicsEffect(_opacityEffect);
+		_opacityEffect->setOpacity(0.);
+	} else {
+		setWindowOpacity(0.);
+	}
 
 	setWindowFlags(Qt::WindowFlags(Qt::FramelessWindowHint)
 		| Qt::WindowStaysOnTopHint
@@ -501,9 +521,15 @@ Widget::Widget(
 		| Qt::NoDropShadowWindowHint
 		| Qt::Tool);
 	setAttribute(Qt::WA_MacAlwaysShowToolWindow);
-	setAttribute(Qt::WA_OpaquePaintEvent);
+	if (!layerShell) {
+		setAttribute(Qt::WA_OpaquePaintEvent);
+	}
 
 	Ui::Platform::InitOnTopPanel(this);
+
+	if (layerShell) {
+		ensureLayerShell();
+	}
 
 	_a_opacity.start([this] { opacityAnimationCallback(); }, 0., 1., st::notifyFastAnim);
 }
@@ -575,7 +601,13 @@ void Widget::hideAnimated(float64 duration, const anim::transition &func) {
 }
 
 void Widget::updateOpacity() {
-	setWindowOpacity(_a_opacity.value(_hiding ? 0. : 1.) * _manager->demoMasterOpacity());
+	const auto opacity = _a_opacity.value(_hiding ? 0. : 1.)
+		* _manager->demoMasterOpacity();
+	if (_opacityEffect) {
+		_opacityEffect->setOpacity(opacity);
+	} else {
+		setWindowOpacity(opacity);
+	}
 }
 
 void Widget::changeShift(int top) {
@@ -586,6 +618,9 @@ void Widget::changeShift(int top) {
 void Widget::updatePosition(QPoint startPosition, Direction shiftDirection) {
 	_startPosition = startPosition;
 	_direction = shiftDirection;
+	if (_layerWindow) {
+		applyLayerAnchorsAndScreen();
+	}
 	moveByShift();
 }
 
@@ -597,8 +632,13 @@ void Widget::addToHeight(int add) {
 }
 
 void Widget::updateGeometry(int x, int y, int width, int height) {
-	move(x, y);
-	setFixedSize(width, height);
+	if (_layerWindow) {
+		setFixedSize(width, height);
+		applyLayerMargins();
+	} else {
+		move(x, y);
+		setFixedSize(width, height);
+	}
 	update();
 }
 
@@ -608,7 +648,11 @@ void Widget::addToShift(int add) {
 }
 
 void Widget::moveByShift() {
-	move(computePosition(height()));
+	if (_layerWindow) {
+		applyLayerMargins();
+	} else {
+		move(computePosition(height()));
+	}
 }
 
 QPoint Widget::computePosition(int height) const {
@@ -617,6 +661,101 @@ QPoint Widget::computePosition(int height) const {
 		realShift = -realShift - height;
 	}
 	return QPoint(_startPosition.x(), _startPosition.y() + realShift);
+}
+
+void Widget::showEvent(QShowEvent *e) {
+	ensureLayerShell();
+	RpWidget::showEvent(e);
+}
+
+void Widget::ensureLayerShell() {
+#ifdef Q_OS_LINUX
+	if (_layerWindow || !LayerShellEnabled()) {
+		return;
+	}
+	if (const auto screen = resolveScreen()) {
+		setScreen(screen);
+	}
+	auto *handle = windowHandle();
+	if (!handle) {
+		return;
+	}
+	_layerWindow = LayerShellQt::Window::get(handle);
+	_layerWindow->setLayer(LayerShellQt::Window::LayerOverlay);
+	_layerWindow->setKeyboardInteractivity(
+		LayerShellQt::Window::KeyboardInteractivityOnDemand);
+	_layerWindow->setActivateOnShow(false);
+	applyLayerAnchorsAndScreen();
+#endif // Q_OS_LINUX
+}
+
+QScreen *Widget::resolveScreen() const {
+	const auto center = NotificationDisplayRect(
+		Core::App().activePrimaryWindow()).center();
+	if (const auto screen = QGuiApplication::screenAt(center)) {
+		return screen;
+	}
+	if (const auto screen = this->screen()) {
+		return screen;
+	}
+	return QGuiApplication::primaryScreen();
+}
+
+void Widget::applyLayerAnchorsAndScreen() {
+#ifdef Q_OS_LINUX
+	if (!_layerWindow) {
+		return;
+	}
+	auto anchors = LayerShellQt::Window::Anchors();
+	if (const auto screen = resolveScreen()) {
+		_layerWindow->setScreen(screen);
+	}
+	const auto geometry = _layerWindow->screen()
+		? _layerWindow->screen()->geometry()
+		: QGuiApplication::primaryScreen()->geometry();
+	if (_startPosition.x() < geometry.center().x()) {
+		anchors |= LayerShellQt::Window::AnchorLeft;
+	} else {
+		anchors |= LayerShellQt::Window::AnchorRight;
+	}
+	if (_direction == Direction::Down) {
+		anchors |= LayerShellQt::Window::AnchorTop;
+	} else {
+		anchors |= LayerShellQt::Window::AnchorBottom;
+	}
+	_anchors = anchors;
+	_layerWindow->setAnchors(anchors);
+	applyLayerMargins();
+#endif // Q_OS_LINUX
+}
+
+void Widget::applyLayerMargins() {
+#ifdef Q_OS_LINUX
+	if (!_layerWindow) {
+		return;
+	}
+	const auto width = this->width();
+	const auto height = this->height();
+	const auto position = computePosition(height);
+	const auto geometry = _layerWindow->screen()
+		? _layerWindow->screen()->geometry()
+		: QGuiApplication::primaryScreen()->geometry();
+	auto margins = QMargins();
+	if (_anchors & LayerShellQt::Window::AnchorLeft) {
+		margins.setLeft(position.x() - geometry.x());
+	}
+	if (_anchors & LayerShellQt::Window::AnchorRight) {
+		margins.setRight(geometry.right() - position.x() - width + 1);
+	}
+	if (_anchors & LayerShellQt::Window::AnchorTop) {
+		margins.setTop(position.y() - geometry.y());
+	}
+	if (_anchors & LayerShellQt::Window::AnchorBottom) {
+		margins.setBottom(geometry.bottom() - position.y() - height + 1);
+	}
+	_layerWindow->setMargins(margins);
+	_layerWindow->setDesiredSize(QSize(width, height));
+#endif // Q_OS_LINUX
 }
 
 Background::Background(QWidget *parent) : RpWidget(parent) {

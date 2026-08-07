@@ -39,6 +39,13 @@ include(cmake/td_ui.cmake)
 include(cmake/telegram_apple_swift_runtime.cmake)
 include(cmake/generate_appstream_changelog.cmake)
 
+if (LINUX)
+    find_package(LayerShellQt REQUIRED)
+    add_library(external_layershell INTERFACE IMPORTED GLOBAL)
+    add_library(desktop-app::external_layershell ALIAS external_layershell)
+    target_link_libraries(external_layershell INTERFACE LayerShellQt::Interface)
+endif()
+
 if (DESKTOP_APP_TEST_APPS)
     include(cmake/tests.cmake)
 endif()
@@ -80,6 +87,7 @@ PRIVATE
     desktop-app::external_zlib
     desktop-app::external_minizip
     desktop-app::external_kcoreaddons
+    desktop-app::external_layershell
     desktop-app::external_qt_static_plugins
     desktop-app::external_qt
     desktop-app::external_qr_code_generator

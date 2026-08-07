@@ -15,13 +15,96 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/empty_userpic.h"
 #include "styles/style_window.h"
 
+#ifdef Q_OS_LINUX
+#include "base/platform/linux/base_linux_library.h"
+#endif // Q_OS_LINUX
+
+#include <cstring>
+
 namespace Window::Notifications {
 namespace {
 
 // Delete notify photo file after 1 minute of not using.
 constexpr int kNotifyDeletePhotoAfterMs = 60000;
 
+#ifdef Q_OS_LINUX
+
+struct wl_display;
+struct wl_registry;
+
+struct RegistryListener {
+	void (*global)(
+		void *data,
+		struct wl_registry *registry,
+		uint32_t name,
+		const char *interface,
+		uint32_t version);
+	void (*global_remove)(
+		void *data,
+		struct wl_registry *registry,
+		uint32_t name);
+};
+
+[[nodiscard]] bool HasLayerShellImpl() {
+	struct wl_display *(*wl_display_connect)(const char *name);
+	void (*wl_display_disconnect)(struct wl_display *display);
+	struct wl_registry *(*wl_display_get_registry)(
+		struct wl_display *display);
+	int (*wl_display_roundtrip)(struct wl_display *display);
+	void (*wl_registry_destroy)(struct wl_registry *registry);
+	int (*wl_registry_add_listener)(
+		struct wl_registry *registry,
+		const RegistryListener *listener,
+		void *data);
+
+	if (const auto lib = base::Platform::LoadLibrary(
+			"libwayland-client.so.0",
+			RTLD_NODELETE); lib
+			&& LOAD_LIBRARY_SYMBOL(lib, wl_display_connect)
+			&& LOAD_LIBRARY_SYMBOL(lib, wl_display_disconnect)
+			&& LOAD_LIBRARY_SYMBOL(lib, wl_display_get_registry)
+			&& LOAD_LIBRARY_SYMBOL(lib, wl_display_roundtrip)
+			&& LOAD_LIBRARY_SYMBOL(lib, wl_registry_destroy)
+			&& LOAD_LIBRARY_SYMBOL(lib, wl_registry_add_listener)) {
+		const auto display = wl_display_connect(nullptr);
+		if (!display) {
+			return false;
+		}
+		auto layerShell = false;
+		const auto listener = RegistryListener{
+			.global = [](void *data, struct wl_registry *, uint32_t,
+					const char *interface, uint32_t) {
+				if (interface
+					&& !std::strcmp(interface, "zwlr_layer_shell_v1")) {
+					*static_cast<bool*>(data) = true;
+				}
+			},
+			.global_remove = [](void *, struct wl_registry *, uint32_t) {
+			},
+		};
+		if (const auto registry = wl_display_get_registry(display)) {
+			wl_registry_add_listener(registry, &listener, &layerShell);
+			wl_display_roundtrip(display);
+			wl_registry_destroy(registry);
+		}
+		wl_display_disconnect(display);
+		return layerShell;
+	}
+	return false;
+}
+
+#endif // Q_OS_LINUX
+
 } // namespace
+
+bool HasLayerShell() {
+#ifdef Q_OS_LINUX
+	static const auto result = HasLayerShellImpl();
+	return result;
+#else // Q_OS_LINUX
+	return false;
+#endif // Q_OS_LINUX
+}
 
 QImage GenerateUserpic(not_null<PeerData*> peer, Ui::PeerUserpicView &view) {
 	return peer->isSelf()

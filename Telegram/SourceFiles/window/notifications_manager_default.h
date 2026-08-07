@@ -24,6 +24,13 @@ class RoundButton;
 class InputField;
 } // namespace Ui
 
+class QGraphicsOpacityEffect;
+class QScreen;
+class QShowEvent;
+namespace LayerShellQt {
+class Window;
+} // namespace LayerShellQt
+
 namespace Window {
 namespace Notifications {
 namespace Default {
@@ -163,6 +170,7 @@ protected:
 	void hideFast();
 	void hideStop();
 	QPoint computePosition(int height) const;
+	void showEvent(QShowEvent *e) override;
 
 	virtual void updateGeometry(int x, int y, int width, int height);
 
@@ -176,6 +184,10 @@ private:
 	void moveByShift();
 	void hideAnimated(float64 duration, const anim::transition &func);
 	bool shiftAnimationCallback(crl::time now);
+	void ensureLayerShell();
+	void applyLayerAnchorsAndScreen();
+	void applyLayerMargins();
+	[[nodiscard]] QScreen *resolveScreen() const;
 
 	const not_null<Manager*> _manager;
 
@@ -187,6 +199,10 @@ private:
 	Direction _direction;
 	anim::value _shift;
 	Ui::Animations::Basic _shiftAnimation;
+
+	LayerShellQt::Window *_layerWindow = nullptr;
+	QGraphicsOpacityEffect *_opacityEffect = nullptr;
+	uint32_t _anchors = 0;
 
 };
 
