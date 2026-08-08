@@ -888,17 +888,6 @@ cd ..
 rm -rf qt5
 EOF
 
-FROM builder AS wayland-protocols
-RUN <<EOF
-git clone -b 1.36 --depth=1 https://gitlab.freedesktop.org/wayland/wayland-protocols.git
-cd wayland-protocols
-meson setup build -Dprefix=/usr/local
-DESTDIR=/usr/src/wayland-protocols-cache meson install -C build
-cd ..
-rm -rf wayland-protocols
-EOF
-
-FROM builder AS ecm
 RUN <<EOF
 git clone -b v6.26.0 --depth=1 https://github.com/KDE/extra-cmake-modules.git
 cd extra-cmake-modules
@@ -908,16 +897,19 @@ cmake -B build . \
 	-DBUILD_MAN_DOCS=OFF \
 	-DBUILD_QCH=OFF
 cmake --build build
-DESTDIR=/usr/src/ecm-cache cmake --install build
+cmake --install build
 cd ..
 rm -rf extra-cmake-modules
 EOF
 
-FROM builder AS layershellqt
-COPY --link --from=qt /usr/src/qt-cache /
-COPY --link --from=xkbcommon /usr/src/xkbcommon-cache /
-COPY --link --from=ecm /usr/src/ecm-cache /
-COPY --link --from=wayland-protocols /usr/src/wayland-protocols-cache /
+RUN <<EOF
+git clone -b 1.36 --depth=1 https://gitlab.freedesktop.org/wayland/wayland-protocols.git
+cd wayland-protocols
+meson setup build -Dprefix=/usr/local
+meson install -C build
+cd ..
+rm -rf wayland-protocols
+EOF
 
 RUN --mount=type=cache,target=/var/cache/ccache <<EOF
 git clone -b v6.7.3 --depth=1 https://github.com/KDE/layer-shell-qt.git
@@ -933,7 +925,7 @@ cmake -B build . \
 	-DBUILD_SHARED_LIBS=OFF \
 	-DCMAKE_BUILD_TYPE=Release
 cmake --build build
-DESTDIR=/usr/src/layershell-cache cmake --install build
+DESTDIR=/usr/src/qt-cache cmake --install build
 cd ..
 rm -rf layer-shell-qt
 EOF
@@ -1066,7 +1058,6 @@ COPY --link --from=breakpad /usr/src/breakpad-cache /
 COPY --link --from=webrtc /usr/src/webrtc-cache /
 COPY --link --from=ada /usr/src/ada-cache /
 COPY --link --from=tde2e /usr/src/tde2e-cache /
-COPY --link --from=layershellqt /usr/src/layershell-cache /
 
 COPY --link --from=patches /usr/src/patches patches
 RUN <<EOF
